@@ -1,0 +1,9 @@
+# .NET build output — generated files (AssemblyInfo.cs, GlobalUsings.g.cs and
+# friends) are not source and only add noise communities to the graph.
+obj/
+bin/
+**/obj/
+**/bin/
+
+# Python bytecode
+__pycache__/
