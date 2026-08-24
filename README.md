@@ -268,3 +268,4 @@ binds every interface so your phone can reach it. With `--lan` anyone on your ne
 can reach it and change your counts; on a home network that is usually what you want.
 There is no login. Do not expose the port to the internet.
 # OPTCGManifest
+# OPTCGManifest
