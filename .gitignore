@@ -1,0 +1,20 @@
+# Build output
+bin/
+obj/
+
+# Secrets made by make_cert.sh - per machine, and the keys must never leave it
+*.pem
+
+# Your data
+manifest.db
+manifest.db-*
+*.db.*.bak
+
+# Regenerated as the app runs
+img-cache/
+debug-scans/
+graphify-out/cache/
+.claude/scheduled_tasks.lock
+
+# Hand-made backups
+*.bak
