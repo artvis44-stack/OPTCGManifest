@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Manifest.Models;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 
 namespace Manifest.Data;
 
@@ -90,9 +90,12 @@ public sealed class AccessRepository : IAccessRepository
         if (text.Length > MaxNote) text = text[..MaxNote];
 
         using var conn = _db.Open();
-        CardRepository.Exec(conn, "BEGIN IMMEDIATE");
-        try
+        using (var tx = conn.BeginTransaction())
         {
+            // Keyed on the address, because the case to guard is two submissions
+            // for one address arriving together when no row for it exists yet -
+            // there is nothing to take a row lock on, and both would file.
+            _db.Dialect.Lock(conn, "access:" + address);
             Submission result;
 
             if (HasAccount(conn, address))
@@ -112,26 +115,21 @@ public sealed class AccessRepository : IAccessRepository
                     cmd.CommandText = """
                         INSERT INTO access_requests
                             (email, note, requested_from, action_token_hash, action_expires_at)
-                        VALUES (@e, @n, @f, @t, @x);
-                        SELECT last_insert_rowid();
+                        VALUES (@e, @n, @f, @t, @x)
+                        RETURNING id
                         """;
-                    cmd.Parameters.AddWithValue("@e", address);
-                    cmd.Parameters.AddWithValue("@n", text);
-                    cmd.Parameters.AddWithValue("@f", (object?)from ?? DBNull.Value);
-                    cmd.Parameters.AddWithValue("@t", Digest(token));
-                    cmd.Parameters.AddWithValue("@x", Stamp(_clock.UtcNow + ActionLife));
+                    cmd.Bind("@e", address);
+                    cmd.Bind("@n", text);
+                    cmd.Bind("@f", (object?)from ?? DBNull.Value);
+                    cmd.Bind("@t", Digest(token));
+                    cmd.Bind("@x", Stamp(_clock.UtcNow + ActionLife));
                     id = Convert.ToInt64(cmd.ExecuteScalar());
                 }
                 result = new Submission(Outcome.Filed, ById(conn, id), token, null);
             }
 
-            CardRepository.Exec(conn, "COMMIT");
+            tx.Commit();
             return result;
-        }
-        catch
-        {
-            CardRepository.Exec(conn, "ROLLBACK");
-            throw;
         }
     }
 
@@ -142,7 +140,7 @@ public sealed class AccessRepository : IAccessRepository
     /// re-sent, because the commonest reason someone asks twice is that the first
     /// mail went to spam and they have no other way to say so.
     /// </summary>
-    Submission Reconsider(SqliteConnection conn, AccessRequest existing)
+    Submission Reconsider(DbConnection conn, AccessRequest existing)
     {
         if (existing.Status == AccessStatus.Pending)
             return new Submission(Outcome.AlreadyPending, existing, null, null);
@@ -157,34 +155,35 @@ public sealed class AccessRepository : IAccessRepository
         return new Submission(Outcome.InviteResent, ById(conn, existing.Id), null, token);
     }
 
-    bool SentRecently(SqliteConnection conn, long id)
+    bool SentRecently(DbConnection conn, long id)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT 1 FROM access_requests
             WHERE id = @id AND invite_sent_at IS NOT NULL AND invite_sent_at > @since
             """;
-        cmd.Parameters.AddWithValue("@id", id);
-        cmd.Parameters.AddWithValue("@since", Stamp(_clock.UtcNow - ResendCooldown));
+        cmd.Bind("@id", id);
+        cmd.Bind("@since", Stamp(_clock.UtcNow - ResendCooldown));
         return cmd.ExecuteScalar() is not null;
     }
 
-    static bool HasAccount(SqliteConnection conn, string email)
+    bool HasAccount(DbConnection conn, string email)
     {
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT 1 FROM users WHERE email = @e";
-        cmd.Parameters.AddWithValue("@e", email);
+        cmd.CommandText = $"SELECT 1 FROM users WHERE email = {_db.Dialect.Nocase("@e")}";
+        cmd.Bind("@e", email);
         return cmd.ExecuteScalar() is not null;
     }
 
     /// <summary>The most recent request from an address, whatever became of it.</summary>
-    static AccessRequest? Latest(SqliteConnection conn, string email)
+    AccessRequest? Latest(DbConnection conn, string email)
     {
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            SELECT * FROM access_requests WHERE email = @e ORDER BY id DESC LIMIT 1
+        cmd.CommandText = $"""
+            SELECT * FROM access_requests WHERE email = {_db.Dialect.Nocase("@e")}
+            ORDER BY id DESC LIMIT 1
             """;
-        cmd.Parameters.AddWithValue("@e", email);
+        cmd.Bind("@e", email);
         using var r = cmd.ExecuteReader();
         return r.Read() ? Read(r) : null;
     }
@@ -195,11 +194,11 @@ public sealed class AccessRepository : IAccessRepository
         return ById(conn, id);
     }
 
-    static AccessRequest? ById(SqliteConnection conn, long id)
+    static AccessRequest? ById(DbConnection conn, long id)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM access_requests WHERE id = @id";
-        cmd.Parameters.AddWithValue("@id", id);
+        cmd.Bind("@id", id);
         using var r = cmd.ExecuteReader();
         return r.Read() ? Read(r) : null;
     }
@@ -222,8 +221,8 @@ public sealed class AccessRepository : IAccessRepository
               AND status = 'pending'
               AND action_expires_at > @now
             """;
-        cmd.Parameters.AddWithValue("@t", Digest(token));
-        cmd.Parameters.AddWithValue("@now", Stamp(_clock.UtcNow));
+        cmd.Bind("@t", Digest(token));
+        cmd.Bind("@now", Stamp(_clock.UtcNow));
         using var r = cmd.ExecuteReader();
         return r.Read() ? Read(r) : null;
     }
@@ -237,10 +236,18 @@ public sealed class AccessRepository : IAccessRepository
     public (AccessRequest Request, string InviteToken)? Approve(long id, string decidedBy)
     {
         using var conn = _db.Open();
-        CardRepository.Exec(conn, "BEGIN IMMEDIATE");
-        try
+        using (var tx = conn.BeginTransaction())
         {
-            var found = ById(conn, id);
+            // Locked, so a Deny or a second Approve arriving now waits for this one
+            // instead of deciding the same row from the same stale read.
+            AccessRequest? found;
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = "SELECT * FROM access_requests WHERE id = @id" + _db.Dialect.ForUpdate;
+                cmd.Bind("@id", id);
+                using var r = cmd.ExecuteReader();
+                found = r.Read() ? Read(r) : null;
+            }
             (AccessRequest, string)? result = null;
 
             // An approved-but-unspent row can be approved again, which is how the
@@ -263,21 +270,16 @@ public sealed class AccessRepository : IAccessRepository
                                action_token_hash = NULL
                          WHERE id = @id
                         """;
-                    cmd.Parameters.AddWithValue("@now", Stamp(_clock.UtcNow));
-                    cmd.Parameters.AddWithValue("@by", decidedBy);
-                    cmd.Parameters.AddWithValue("@id", id);
+                    cmd.Bind("@now", Stamp(_clock.UtcNow));
+                    cmd.Bind("@by", decidedBy);
+                    cmd.Bind("@id", id);
                     cmd.ExecuteNonQuery();
                 }
                 result = (ById(conn, id)!, token);
             }
 
-            CardRepository.Exec(conn, "COMMIT");
+            tx.Commit();
             return result;
-        }
-        catch
-        {
-            CardRepository.Exec(conn, "ROLLBACK");
-            throw;
         }
     }
 
@@ -286,7 +288,7 @@ public sealed class AccessRepository : IAccessRepository
     /// the applicant's mailbox stops working the moment this runs, which is what
     /// makes re-sending safe: there is never more than one live link per request.
     /// </summary>
-    string Reissue(SqliteConnection conn, long id)
+    string Reissue(DbConnection conn, long id)
     {
         var token = NewToken();
         var now = _clock.UtcNow;
@@ -298,10 +300,10 @@ public sealed class AccessRepository : IAccessRepository
                    invite_sent_at = @now
              WHERE id = @id
             """;
-        cmd.Parameters.AddWithValue("@t", Digest(token));
-        cmd.Parameters.AddWithValue("@x", Stamp(now + InviteLife));
-        cmd.Parameters.AddWithValue("@now", Stamp(now));
-        cmd.Parameters.AddWithValue("@id", id);
+        cmd.Bind("@t", Digest(token));
+        cmd.Bind("@x", Stamp(now + InviteLife));
+        cmd.Bind("@now", Stamp(now));
+        cmd.Bind("@id", id);
         cmd.ExecuteNonQuery();
         return token;
     }
@@ -325,9 +327,9 @@ public sealed class AccessRepository : IAccessRepository
                        invite_expires_at = NULL
                  WHERE id = @id AND used_at IS NULL
                 """;
-            cmd.Parameters.AddWithValue("@now", Stamp(_clock.UtcNow));
-            cmd.Parameters.AddWithValue("@by", decidedBy);
-            cmd.Parameters.AddWithValue("@id", id);
+            cmd.Bind("@now", Stamp(_clock.UtcNow));
+            cmd.Bind("@by", decidedBy);
+            cmd.Bind("@id", id);
             if (cmd.ExecuteNonQuery() == 0) return null;
         }
         return ById(id);
@@ -352,8 +354,8 @@ public sealed class AccessRepository : IAccessRepository
               AND used_at IS NULL
               AND invite_expires_at > @now
             """;
-        cmd.Parameters.AddWithValue("@t", Digest(token));
-        cmd.Parameters.AddWithValue("@now", Stamp(_clock.UtcNow));
+        cmd.Bind("@t", Digest(token));
+        cmd.Bind("@now", Stamp(_clock.UtcNow));
         using var r = cmd.ExecuteReader();
         return r.Read() ? Read(r) : null;
     }
@@ -377,8 +379,8 @@ public sealed class AccessRepository : IAccessRepository
                AND used_at IS NULL
                AND invite_expires_at > @now
             """;
-        cmd.Parameters.AddWithValue("@now", Stamp(_clock.UtcNow));
-        cmd.Parameters.AddWithValue("@t", Digest(token));
+        cmd.Bind("@now", Stamp(_clock.UtcNow));
+        cmd.Bind("@t", Digest(token));
         return cmd.ExecuteNonQuery() == 1;
     }
 
@@ -393,8 +395,8 @@ public sealed class AccessRepository : IAccessRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "UPDATE access_requests SET user_id = @u WHERE id = @id";
-        cmd.Parameters.AddWithValue("@u", userId);
-        cmd.Parameters.AddWithValue("@id", id);
+        cmd.Bind("@u", userId);
+        cmd.Bind("@id", id);
         cmd.ExecuteNonQuery();
     }
 
@@ -415,8 +417,8 @@ public sealed class AccessRepository : IAccessRepository
                    invite_token_hash = @t
              WHERE id = @id AND used_at IS NOT NULL
             """;
-        cmd.Parameters.AddWithValue("@t", Digest(token));
-        cmd.Parameters.AddWithValue("@id", id);
+        cmd.Bind("@t", Digest(token));
+        cmd.Bind("@id", id);
         cmd.ExecuteNonQuery();
     }
 
@@ -428,8 +430,8 @@ public sealed class AccessRepository : IAccessRepository
         cmd.CommandText = status is null
             ? "SELECT * FROM access_requests ORDER BY id DESC LIMIT @n"
             : "SELECT * FROM access_requests WHERE status = @s ORDER BY id DESC LIMIT @n";
-        if (status is not null) cmd.Parameters.AddWithValue("@s", status);
-        cmd.Parameters.AddWithValue("@n", Math.Clamp(limit, 1, 1000));
+        if (status is not null) cmd.Bind("@s", status);
+        cmd.Bind("@n", Math.Clamp(limit, 1, 1000));
 
         var found = new List<AccessRequest>();
         using var r = cmd.ExecuteReader();
@@ -462,11 +464,11 @@ public sealed class AccessRepository : IAccessRepository
                SET invite_token_hash = NULL
              WHERE invite_token_hash IS NOT NULL AND invite_expires_at <= @now;
             """;
-        cmd.Parameters.AddWithValue("@now", Stamp(_clock.UtcNow));
+        cmd.Bind("@now", Stamp(_clock.UtcNow));
         return cmd.ExecuteNonQuery();
     }
 
-    static AccessRequest Read(SqliteDataReader r) => new()
+    static AccessRequest Read(DbDataReader r) => new()
     {
         Id = r.Long("id"),
         Email = r.Text("email"),
@@ -520,7 +522,7 @@ public sealed class AccessRepository : IAccessRepository
     static string Digest(string token) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token))).ToLowerInvariant();
 
-    static string Stamp(DateTime utc) => utc.ToString("yyyy-MM-dd HH:mm:ss");
+    object Stamp(DateTime utc) => _db.Dialect.Time(utc);
 
     static string Base64Url(byte[] bytes) =>
         Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');

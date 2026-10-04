@@ -1,3 +1,4 @@
+using Manifest.Data;
 namespace Manifest.Services;
 
 /// <summary>
@@ -45,7 +46,7 @@ public sealed class ImageCache
         {
             using var cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT image_url FROM catalog WHERE card_id = @id";
-            cmd.Parameters.AddWithValue("@id", cid);
+            cmd.Bind("@id", cid);
             url = cmd.ExecuteScalar() as string;
         }
         if (string.IsNullOrEmpty(url)) return null;

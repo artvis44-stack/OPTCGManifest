@@ -1,6 +1,6 @@
 using Manifest.Models;
 using Manifest.Services;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 
 namespace Manifest.Data;
 
@@ -21,23 +21,23 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         return Resolve(conn, cardId);
     }
 
-    public static CatalogRow? Resolve(SqliteConnection conn, string cardId)
+    public static CatalogRow? Resolve(DbConnection conn, string cardId)
     {
         var row = CatalogRowById(conn, cardId);
         if (row is not null) return row;
         return CatalogRowById(conn, cardId.Split('_')[0]);
     }
 
-    public static CatalogRow? CatalogRowById(SqliteConnection conn, string cardId)
+    public static CatalogRow? CatalogRowById(DbConnection conn, string cardId)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM catalog WHERE card_id = @id";
-        cmd.Parameters.AddWithValue("@id", cardId);
+        cmd.Bind("@id", cardId);
         using var r = cmd.ExecuteReader();
         return r.Read() ? ReadCatalog(r) : null;
     }
 
-    static CatalogRow ReadCatalog(SqliteDataReader r) => new()
+    static CatalogRow ReadCatalog(DbDataReader r) => new()
     {
         CardId = r.Text("card_id"),
         BaseId = r.Text("base_id"),
@@ -88,7 +88,9 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             }
             else
             {
-                where.Add("(c.name LIKE @q_name OR c.card_id LIKE @q_id OR c.types LIKE @q_types)");
+                var like = _db.Dialect;
+                where.Add($"({like.Like("c.name", "@q_name")} OR {like.Like("c.card_id", "@q_id")} "
+                          + $"OR {like.Like("c.types", "@q_types")})");
                 args.Add(("@q_name", $"%{q}%"));
                 args.Add(("@q_id", $"{q.ToUpperInvariant()}%"));
                 args.Add(("@q_types", $"%{q}%"));
@@ -110,7 +112,7 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         }
         if (!string.IsNullOrEmpty(color))
         {
-            where.Add("c.colors LIKE @color");
+            where.Add(_db.Dialect.Like("c.colors", "@color"));
             args.Add(("@color", $"%{color}%"));
         }
         if (!string.IsNullOrEmpty(rarity))
@@ -137,7 +139,7 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql.ToString();
-        foreach (var (name, value) in args) cmd.Parameters.AddWithValue(name, value);
+        foreach (var (name, value) in args) cmd.Bind(name, value);
 
         var results = new List<SearchRow>();
         using var r = cmd.ExecuteReader();
@@ -213,7 +215,7 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             WHERE k.user_id = @user AND k.qty > 0
             ORDER BY k.card_id
             """;
-        cmd.Parameters.AddWithValue("@user", userId);
+        cmd.Bind("@user", userId);
         var rows = new List<CollectionRow>();
         using var r = cmd.ExecuteReader();
         while (r.Read())
@@ -254,8 +256,8 @@ public sealed class CardRepository : ICardRepository, IScanRepository
                                LEFT JOIN prices p ON p.card_id = c.card_id
                 WHERE c.card_id = @id
                 """;
-            cmd.Parameters.AddWithValue("@id", id);
-            cmd.Parameters.AddWithValue("@user", userId);
+            cmd.Bind("@id", id);
+            cmd.Bind("@user", userId);
             using var r = cmd.ExecuteReader();
             if (!r.Read()) return null;
             return new CardDetailRow
@@ -296,7 +298,7 @@ public sealed class CardRepository : ICardRepository, IScanRepository
                 FROM collection k LEFT JOIN prices p ON p.card_id = k.card_id
                 WHERE k.user_id = @user AND k.qty > 0
                 """;
-            cmd.Parameters.AddWithValue("@user", userId);
+            cmd.Bind("@user", userId);
             using var r = cmd.ExecuteReader();
             if (r.Read())
             {
@@ -316,7 +318,7 @@ public sealed class CardRepository : ICardRepository, IScanRepository
                 WHERE k.user_id = @user AND k.qty > 0
                 GROUP BY c.set_label ORDER BY c.set_label
                 """;
-            cmd.Parameters.AddWithValue("@user", userId);
+            cmd.Bind("@user", userId);
             using var r = cmd.ExecuteReader();
             while (r.Read())
                 stats.Sets.Add(new SetStat
@@ -337,45 +339,48 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         var cid = CardId.Normalise(rawCardId) ?? rawCardId.ToUpperInvariant().Trim();
         if (cid.Length == 0) throw new ArgumentException("empty card_id");
 
+        var now = _db.Dialect.Now;
         using var conn = _db.Open();
-        Exec(conn, "BEGIN IMMEDIATE");
         int updated;
-        try
+        using (var tx = conn.BeginTransaction())
         {
             if (qty is not null)
             {
                 using var cmd = conn.CreateCommand();
-                cmd.CommandText = """
+                cmd.CommandText = $"""
                     INSERT INTO collection (user_id, card_id, qty, note)
                     VALUES (@user,@id,@qty,@note)
                     ON CONFLICT(user_id, card_id) DO UPDATE
                       SET qty = excluded.qty,
                           note = COALESCE(NULLIF(excluded.note,''), collection.note),
-                          updated_at = datetime('now')
+                          updated_at = {now}
                     """;
-                cmd.Parameters.AddWithValue("@user", userId);
-                cmd.Parameters.AddWithValue("@id", cid);
-                cmd.Parameters.AddWithValue("@qty", Math.Max(0, qty.Value));
-                cmd.Parameters.AddWithValue("@note", note ?? "");
+                cmd.Bind("@user", userId);
+                cmd.Bind("@id", cid);
+                cmd.Bind("@qty", Math.Max(0, qty.Value));
+                cmd.Bind("@note", note ?? "");
                 cmd.ExecuteNonQuery();
             }
             else
             {
                 var d = delta ?? 0;
                 using var cmd = conn.CreateCommand();
-                cmd.CommandText = """
+                // CASE rather than MAX/GREATEST: SQLite has only the one and
+                // PostgreSQL only the other.
+                cmd.CommandText = $"""
                     INSERT INTO collection (user_id, card_id, qty, note)
                     VALUES (@user,@id,@seed,@note)
                     ON CONFLICT(user_id, card_id) DO UPDATE
-                      SET qty = MAX(0, collection.qty + @delta),
+                      SET qty = CASE WHEN collection.qty + @delta < 0 THEN 0
+                                     ELSE collection.qty + @delta END,
                           note = COALESCE(NULLIF(excluded.note,''), collection.note),
-                          updated_at = datetime('now')
+                          updated_at = {now}
                     """;
-                cmd.Parameters.AddWithValue("@user", userId);
-                cmd.Parameters.AddWithValue("@id", cid);
-                cmd.Parameters.AddWithValue("@seed", Math.Max(0, d));
-                cmd.Parameters.AddWithValue("@note", note ?? "");
-                cmd.Parameters.AddWithValue("@delta", d);
+                cmd.Bind("@user", userId);
+                cmd.Bind("@id", cid);
+                cmd.Bind("@seed", Math.Max(0, d));
+                cmd.Bind("@note", note ?? "");
+                cmd.Bind("@delta", d);
                 cmd.ExecuteNonQuery();
             }
 
@@ -383,8 +388,8 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             {
                 clean.CommandText =
                     "DELETE FROM collection WHERE user_id = @user AND card_id = @id AND qty <= 0";
-                clean.Parameters.AddWithValue("@user", userId);
-                clean.Parameters.AddWithValue("@id", cid);
+                clean.Bind("@user", userId);
+                clean.Bind("@id", cid);
                 clean.ExecuteNonQuery();
             }
 
@@ -392,18 +397,13 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             {
                 read.CommandText =
                     "SELECT qty FROM collection WHERE user_id = @user AND card_id = @id";
-                read.Parameters.AddWithValue("@user", userId);
-                read.Parameters.AddWithValue("@id", cid);
+                read.Bind("@user", userId);
+                read.Bind("@id", cid);
                 var value = read.ExecuteScalar();
                 updated = value is null or DBNull ? 0 : Convert.ToInt32(value);
             }
 
-            Exec(conn, "COMMIT");
-        }
-        catch
-        {
-            Exec(conn, "ROLLBACK");
-            throw;
+            tx.Commit();
         }
 
         var card = Resolve(conn, cid);
@@ -433,38 +433,33 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             return new BulkLogResult();
 
         using var conn = _db.Open();
-        Exec(conn, "BEGIN IMMEDIATE");
-        try
+        using (var tx = conn.BeginTransaction())
         {
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = """
+            cmd.CommandText = $"""
                 INSERT INTO collection (user_id, card_id, qty, note)
                 VALUES (@user,@id,@delta,@note)
                 ON CONFLICT(user_id, card_id) DO UPDATE
                   SET qty = collection.qty + excluded.qty,
                       note = COALESCE(NULLIF(excluded.note,''), collection.note),
-                      updated_at = datetime('now')
+                      updated_at = {_db.Dialect.Now}
                 """;
-            var userParam = cmd.Parameters.Add("@user", SqliteType.Integer);
-            var idParam = cmd.Parameters.Add("@id", SqliteType.Text);
-            var deltaParam = cmd.Parameters.Add("@delta", SqliteType.Integer);
-            var noteParam = cmd.Parameters.Add("@note", SqliteType.Text);
+            cmd.Bind("@user", userId);
+            cmd.Bind("@note", note ?? "");
+            var idParam = cmd.Bind("@id", null);
+            var deltaParam = cmd.Bind("@delta", null);
 
-            userParam.Value = userId;
-            noteParam.Value = note ?? "";
-            foreach (var (cid, delta) in clean)
+            // In a fixed order. PostgreSQL locks each row as it is written, so two
+            // bulk logs sharing cards but listing them differently would otherwise
+            // each hold a row the other is waiting for.
+            foreach (var cid in clean.Keys.Order(StringComparer.Ordinal))
             {
                 idParam.Value = cid;
-                deltaParam.Value = delta;
+                deltaParam.Value = clean[cid];
                 cmd.ExecuteNonQuery();
             }
 
-            Exec(conn, "COMMIT");
-        }
-        catch
-        {
-            Exec(conn, "ROLLBACK");
-            throw;
+            tx.Commit();
         }
 
         var result = new BulkLogResult
@@ -477,8 +472,8 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             var card = Resolve(conn, cid);
             using var read = conn.CreateCommand();
             read.CommandText = "SELECT qty FROM collection WHERE user_id = @user AND card_id = @id";
-            read.Parameters.AddWithValue("@user", userId);
-            read.Parameters.AddWithValue("@id", cid);
+            read.Bind("@user", userId);
+            read.Bind("@id", cid);
             result.Cards.Add(new AdjustResult
             {
                 CardId = cid,
@@ -501,7 +496,7 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "DELETE FROM collection WHERE user_id = @user";
-        cmd.Parameters.AddWithValue("@user", userId);
+        cmd.Bind("@user", userId);
         cmd.ExecuteNonQuery();
     }
 
@@ -510,7 +505,7 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT count(*) c FROM catalog";
-        return (long)cmd.ExecuteScalar()!;
+        return Convert.ToInt64(cmd.ExecuteScalar());
     }
 
     public void LogScan(long userId, string? cardId, string result)
@@ -519,16 +514,9 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         using var cmd = conn.CreateCommand();
         cmd.CommandText =
             "INSERT INTO scan_log (user_id, card_id, result) VALUES (@user,@id,@result)";
-        cmd.Parameters.AddWithValue("@user", userId);
-        cmd.Parameters.AddWithValue("@id", (object?)cardId ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@result", result);
-        cmd.ExecuteNonQuery();
-    }
-
-    internal static void Exec(SqliteConnection conn, string sql)
-    {
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
+        cmd.Bind("@user", userId);
+        cmd.Bind("@id", (object?)cardId ?? DBNull.Value);
+        cmd.Bind("@result", result);
         cmd.ExecuteNonQuery();
     }
 }

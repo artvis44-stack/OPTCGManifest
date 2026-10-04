@@ -58,7 +58,7 @@ to `make_cert.sh` and skip themselves if `openssl` is missing.
 | `Web/Guard.cs` | Host / Origin / content-type / body-size refusals |
 | `Web/Endpoints.cs` | every route |
 | `Web/SetupHelper.cs` | the plain-http certificate-install listener |
-| `Data/` | connection handling, schema, card and deck repositories |
+| `Data/` | connection handling, schema, card and deck repositories; `SqlDialect` holds the few SQLite/PostgreSQL differences, `Migrations/Postgres/` the versioned PostgreSQL schema |
 | `Services/` | card-id parsing, deck analysis, image cache, the two scanners |
 | `Tools/` | the catalogue scraper and the two refresh jobs |
 

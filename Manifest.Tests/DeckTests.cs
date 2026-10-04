@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Microsoft.Data.Sqlite;
 
 namespace Manifest.Tests;
 
@@ -288,15 +287,7 @@ public class DeckTests(ServerFixture server)
         }
     }
 
-    void SetCategory(string cardId, string category)
-    {
-        using var conn = new SqliteConnection(
-            $"Data Source={Path.Combine(server.WorkDir, "manifest.db")}");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE catalog SET category = @category WHERE card_id = @id";
-        cmd.Parameters.AddWithValue("@category", category);
-        cmd.Parameters.AddWithValue("@id", cardId);
-        cmd.ExecuteNonQuery();
-    }
+    void SetCategory(string cardId, string category) =>
+        server.ExecuteSql("UPDATE catalog SET category = @category WHERE card_id = @id",
+                          ("@category", category), ("@id", cardId));
 }

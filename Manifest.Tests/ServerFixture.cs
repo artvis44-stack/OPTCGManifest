@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
+using Npgsql;
 
 namespace Manifest.Tests;
 
@@ -27,6 +29,19 @@ public sealed class ServerFixture : IAsyncLifetime
 
     Process? _server;
 
+    /// <summary>
+    /// Set to a PostgreSQL URL the suite may create databases on, e.g.
+    /// postgres://manifest:manifest@127.0.0.1:55432/manifest, and every test runs
+    /// against a fresh PostgreSQL database instead of a scratch manifest.db.
+    /// </summary>
+    public static string? PostgresAdminUrl =>
+        Environment.GetEnvironmentVariable("MANIFEST_TEST_POSTGRES") is { Length: > 0 } url ? url : null;
+
+    /// <summary>What the server is started with: null for SQLite in WorkDir.</summary>
+    public string? DatabaseUrl { get; private set; }
+
+    string? _postgresDatabase;
+
     /// <summary>The repository root, found by walking up from the test binary.</summary>
     public static string RepoRoot { get; } = Find();
 
@@ -46,6 +61,8 @@ public sealed class ServerFixture : IAsyncLifetime
         WorkDir = Directory.CreateTempSubdirectory("manifest-test-").FullName;
         foreach (var f in new[] { "ui.html", "catalog.json" })
             File.Copy(Path.Combine(RepoRoot, f), Path.Combine(WorkDir, f));
+
+        (_postgresDatabase, DatabaseUrl) = CreateTestDatabase();
 
         Client = new HttpClient
         {
@@ -104,7 +121,7 @@ public sealed class ServerFixture : IAsyncLifetime
 
     public async Task Start()
     {
-        _server = StartServer(WorkDir, Port);
+        _server = StartServer(WorkDir, Port, DatabaseUrl);
         for (var i = 0; i < 120; i++)
         {
             try
@@ -124,7 +141,8 @@ public sealed class ServerFixture : IAsyncLifetime
         throw new TimeoutException("server never came up");
     }
 
-    public static Process StartServer(string workDir, int port, params string[] extra)
+    public static Process StartServer(string workDir, int port, string? databaseUrl,
+                                      params string[] extra)
     {
         var info = new ProcessStartInfo
         {
@@ -143,6 +161,10 @@ public sealed class ServerFixture : IAsyncLifetime
         info.Environment.Remove("ANTHROPIC_API_KEY");
         // Registration has to be open for the suite to make itself an account.
         info.Environment["MANIFEST_INVITE_CODE"] = InviteCode;
+        // Whatever the shell running the tests points at is not the suite's to use.
+        info.Environment.Remove("DATABASE_URL");
+        if (databaseUrl is null) info.Environment.Remove("MANIFEST_DATABASE_URL");
+        else info.Environment["MANIFEST_DATABASE_URL"] = databaseUrl;
 
         var proc = Process.Start(info)
                    ?? throw new InvalidOperationException("could not start the server");
@@ -178,7 +200,79 @@ public sealed class ServerFixture : IAsyncLifetime
         Stop();
         Client.Dispose();
         try { Directory.Delete(WorkDir, recursive: true); } catch { /* best effort */ }
+        DropTestDatabase(_postgresDatabase);
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// A fresh, empty PostgreSQL database and the URL a server should be given for
+    /// it - or two nulls when the suite is running on SQLite.
+    /// </summary>
+    public static (string? Name, string? Url) CreateTestDatabase()
+    {
+        if (PostgresAdminUrl is not { } admin) return (null, null);
+        var name = $"manifest_test_{Guid.NewGuid():N}";
+        AdminExec(admin, $"CREATE DATABASE {name}");
+        return (name, WithDatabase(admin, name));
+    }
+
+    public static void DropTestDatabase(string? name)
+    {
+        if (PostgresAdminUrl is not { } admin || name is null) return;
+        try { AdminExec(admin, $"DROP DATABASE IF EXISTS {name} WITH (FORCE)"); }
+        catch { /* best effort */ }
+    }
+
+    /// <summary>
+    /// Runs SQL against whatever database the server is using, for the few tests
+    /// that need to put the data in a state the API will not.
+    /// </summary>
+    public void ExecuteSql(string sql, params (string Name, object Value)[] args)
+    {
+        using System.Data.Common.DbConnection conn = DatabaseUrl is null
+            ? new SqliteConnection($"Data Source={Path.Combine(WorkDir, "manifest.db")}")
+            : new NpgsqlConnection(ConnectionString(DatabaseUrl));
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var (name, value) in args)
+        {
+            var p = cmd.CreateParameter();
+            p.ParameterName = name;
+            p.Value = value;
+            cmd.Parameters.Add(p);
+        }
+        cmd.ExecuteNonQuery();
+    }
+
+    static void AdminExec(string adminUrl, string sql)
+    {
+        using var conn = new NpgsqlConnection(ConnectionString(adminUrl));
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.ExecuteNonQuery();
+    }
+
+    static string WithDatabase(string url, string database)
+    {
+        var b = new UriBuilder(url) { Path = "/" + database };
+        return b.Uri.ToString();
+    }
+
+    public static string ConnectionString(string url)
+    {
+        var uri = new Uri(url);
+        var user = uri.UserInfo.Split(':', 2);
+        return new NpgsqlConnectionStringBuilder
+        {
+            Host = uri.Host,
+            Port = uri.Port > 0 ? uri.Port : 5432,
+            Database = uri.AbsolutePath.TrimStart('/'),
+            Username = Uri.UnescapeDataString(user[0]),
+            Password = user.Length > 1 ? Uri.UnescapeDataString(user[1]) : null,
+            Pooling = false,
+        }.ToString();
     }
 
     // ---- request helpers, mirroring the Python suite's get()/post()/raw()

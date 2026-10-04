@@ -64,7 +64,14 @@ public sealed class AppConfig
 
     public long UploadLimitBytes { get; init; } = ReadUploadLimitBytes();
 
-    public string DatabaseUrl { get; init; } =
+    public string DatabaseUrl { get; init; } = DatabaseUrlFromEnvironment();
+
+    /// <summary>
+    /// sqlite://manifest.db unless told otherwise, so a bare run on one machine still
+    /// needs no configuration. The subcommands read this too, which is why it is not
+    /// only an instance property.
+    /// </summary>
+    public static string DatabaseUrlFromEnvironment() =>
         Env("MANIFEST_DATABASE_URL") ?? Env("DATABASE_URL") ?? "sqlite://manifest.db";
 
     public string? RedisUrl { get; init; } =
@@ -159,6 +166,9 @@ public sealed class AppConfig
 
         if (UploadLimitBytes < 1024)
             errors.Add("MANIFEST_UPLOAD_LIMIT_BYTES must be at least 1024.");
+
+        if (Data.Database.RejectUrl(DatabaseUrl) is { } badUrl)
+            errors.Add(badUrl);
 
         var mode = WorkerMode.Trim().ToLowerInvariant();
         if (mode is not ("inline" or "postgres" or "redis" or "disabled"))

@@ -41,7 +41,7 @@ public static class HealthChecks
             using var cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT 1";
             return Convert.ToInt32(cmd.ExecuteScalar()) == 1
-                ? new Component("ok")
+                ? new Component("ok", database.Dialect.Name)
                 : new Component("fail", "unexpected database probe result");
         }
         catch (Exception e)

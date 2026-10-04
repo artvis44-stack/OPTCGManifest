@@ -11,7 +11,8 @@ using Manifest.Web;
 
 // The catalogue and price tools are subcommands of the same binary rather than
 // separate scripts, so there is one thing to build and one thing to ship.
-if (args.Length > 0 && args[0] is "scrape" or "refresh-catalog" or "refresh-prices" or "user")
+if (args.Length > 0
+    && args[0] is "scrape" or "refresh-catalog" or "refresh-prices" or "user" or "migrate-sqlite")
 {
     var toolPaths = new AppPaths(Cli.RootFrom(args));
     return args[0] switch
@@ -20,6 +21,7 @@ if (args.Length > 0 && args[0] is "scrape" or "refresh-catalog" or "refresh-pric
         "refresh-catalog" => await CatalogRefresh.Run(toolPaths),
         "refresh-prices" => await PriceRefresh.Run(toolPaths, new Database(toolPaths)),
         "user" => UserAdmin.Run(args[1..], new Database(toolPaths)),
+        "migrate-sqlite" => SqliteToPostgres.Run(args[1..], toolPaths),
         _ => 1,
     };
 }
@@ -28,7 +30,7 @@ var config = Cli.Parse(args);
 if (config is null) return 0;
 
 var paths = new AppPaths(config.Root);
-var database = new Database(paths);
+var database = new Database(paths, config.DatabaseUrl);
 var mailSettings = MailSettings.FromEnvironment();
 
 // Default to this machine only. Reaching the app from a phone is what --lan is for,
@@ -206,6 +208,7 @@ else
 {
     Console.WriteLine($"  Your phone   : {scheme}://{ip}:{config.Port}");
 }
+Console.WriteLine($"  Database     : {database.Description}");
 var accountCount = accounts.Count();
 if (accountCount == 0 && AppConfig.RegistrationOpen)
     Console.WriteLine("  Accounts     : none yet - the first one created owns any "
@@ -273,7 +276,9 @@ Console.WriteLine("  Ctrl-C to stop.\n");
 
 await app.RunAsync();
 if (helper is not null) await helper.StopAsync();
-Console.WriteLine("\n  Stopped. Counts are saved in manifest.db");
+Console.WriteLine(database.SqliteFile is { } file
+    ? $"\n  Stopped. Counts are saved in {Path.GetFileName(file)}"
+    : "\n  Stopped. Counts are saved in PostgreSQL");
 return 0;
 
 static string? RequestId(string? value)

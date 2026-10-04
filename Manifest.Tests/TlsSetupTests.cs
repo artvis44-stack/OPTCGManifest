@@ -45,7 +45,7 @@ public class TlsSetupTests : IAsyncLifetime
             return;
         }
 
-        _server = ServerFixture.StartServer(_work, Port, "--https");
+        _server = ServerFixture.StartServer(_work, Port, null, "--https");
         for (var i = 0; i < 60; i++)
         {
             try

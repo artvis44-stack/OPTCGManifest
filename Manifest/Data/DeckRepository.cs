@@ -1,6 +1,6 @@
 using Manifest.Models;
 using Manifest.Services;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 
 namespace Manifest.Data;
 
@@ -24,7 +24,7 @@ public sealed class DeckRepository : IDeckRepository
         {
             cmd.CommandText =
                 "SELECT * FROM decks WHERE user_id = @user ORDER BY updated_at DESC";
-            cmd.Parameters.AddWithValue("@user", userId);
+            cmd.Bind("@user", userId);
             using var r = cmd.ExecuteReader();
             while (r.Read())
                 decks.Add((r.Long("id"), r.Text("name"), r.Str("created_at"),
@@ -37,7 +37,7 @@ public sealed class DeckRepository : IDeckRepository
             var leader = CardRepository.CatalogRowById(conn, d.LeaderId);
             using var count = conn.CreateCommand();
             count.CommandText = "SELECT COALESCE(SUM(qty),0) n FROM deck_cards WHERE deck_id = @id";
-            count.Parameters.AddWithValue("@id", d.Id);
+            count.Bind("@id", d.Id);
             var total = Convert.ToInt32(count.ExecuteScalar());
 
             out_.Add(new DeckListItem
@@ -60,15 +60,15 @@ public sealed class DeckRepository : IDeckRepository
         return Detail(conn, userId, deckId);
     }
 
-    static DeckDetail? Detail(SqliteConnection conn, long userId, long deckId)
+    static DeckDetail? Detail(DbConnection conn, long userId, long deckId)
     {
         string name, leaderId;
         string? created, updated;
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = "SELECT * FROM decks WHERE id = @id AND user_id = @user";
-            cmd.Parameters.AddWithValue("@id", deckId);
-            cmd.Parameters.AddWithValue("@user", userId);
+            cmd.Bind("@id", deckId);
+            cmd.Bind("@user", userId);
             using var r = cmd.ExecuteReader();
             if (!r.Read()) return null;
             name = r.Text("name");
@@ -97,8 +97,8 @@ public sealed class DeckRepository : IDeckRepository
                 WHERE dc.deck_id = @id
                 ORDER BY c.base_id, c.variant
                 """;
-            cmd.Parameters.AddWithValue("@id", deckId);
-            cmd.Parameters.AddWithValue("@user", userId);
+            cmd.Bind("@id", deckId);
+            cmd.Bind("@user", userId);
             using var r = cmd.ExecuteReader();
             while (r.Read())
                 cards.Add(new DeckCardRow
@@ -237,13 +237,13 @@ public sealed class DeckRepository : IDeckRepository
 
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO decks (user_id, name, leader_card_id) VALUES (@user, @name, @leader);
-            SELECT last_insert_rowid();
+            INSERT INTO decks (user_id, name, leader_card_id) VALUES (@user, @name, @leader)
+            RETURNING id
             """;
-        cmd.Parameters.AddWithValue("@user", userId);
-        cmd.Parameters.AddWithValue("@name", trimmed);
-        cmd.Parameters.AddWithValue("@leader", leader.CardId);
-        var id = (long)cmd.ExecuteScalar()!;
+        cmd.Bind("@user", userId);
+        cmd.Bind("@name", trimmed);
+        cmd.Bind("@leader", leader.CardId);
+        var id = Convert.ToInt64(cmd.ExecuteScalar());
         return Detail(conn, userId, id)!;
     }
 
@@ -253,8 +253,8 @@ public sealed class DeckRepository : IDeckRepository
         using (var exists = conn.CreateCommand())
         {
             exists.CommandText = "SELECT 1 FROM decks WHERE id = @id AND user_id = @user";
-            exists.Parameters.AddWithValue("@id", deckId);
-            exists.Parameters.AddWithValue("@user", userId);
+            exists.Bind("@id", deckId);
+            exists.Bind("@user", userId);
             if (exists.ExecuteScalar() is null) return null;
         }
 
@@ -270,16 +270,16 @@ public sealed class DeckRepository : IDeckRepository
 
         using (var cmd = conn.CreateCommand())
         {
-            cmd.CommandText = """
+            cmd.CommandText = $"""
                 UPDATE decks SET name = COALESCE(NULLIF(@name, ''), name),
                                  leader_card_id = COALESCE(@leader, leader_card_id),
-                                 updated_at = datetime('now')
+                                 updated_at = {_db.Dialect.Now}
                 WHERE id = @id AND user_id = @user
                 """;
-            cmd.Parameters.AddWithValue("@name", (name ?? "").Trim());
-            cmd.Parameters.AddWithValue("@leader", (object?)newLeaderId ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("@id", deckId);
-            cmd.Parameters.AddWithValue("@user", userId);
+            cmd.Bind("@name", (name ?? "").Trim());
+            cmd.Bind("@leader", (object?)newLeaderId ?? DBNull.Value);
+            cmd.Bind("@id", deckId);
+            cmd.Bind("@user", userId);
             cmd.ExecuteNonQuery();
         }
 
@@ -297,8 +297,8 @@ public sealed class DeckRepository : IDeckRepository
                 (SELECT id FROM decks WHERE id = @id AND user_id = @user);
             DELETE FROM decks WHERE id = @id AND user_id = @user;
             """;
-        cmd.Parameters.AddWithValue("@id", deckId);
-        cmd.Parameters.AddWithValue("@user", userId);
+        cmd.Bind("@id", deckId);
+        cmd.Bind("@user", userId);
         cmd.ExecuteNonQuery();
     }
 
@@ -314,19 +314,15 @@ public sealed class DeckRepository : IDeckRepository
         if (DeckAnalysis.IsLeader(card))
             throw new RuleViolation("leaders go in the leader slot, not the card list");
 
-        CardRepository.Exec(conn, "BEGIN IMMEDIATE");
-        try
+        using (var tx = conn.BeginTransaction())
         {
             using (var exists = conn.CreateCommand())
             {
-                exists.CommandText = "SELECT 1 FROM decks WHERE id = @id AND user_id = @user";
-                exists.Parameters.AddWithValue("@id", deckId);
-                exists.Parameters.AddWithValue("@user", userId);
-                if (exists.ExecuteScalar() is null)
-                {
-                    CardRepository.Exec(conn, "ROLLBACK");
-                    return null;
-                }
+                exists.CommandText =
+                    $"SELECT 1 FROM decks WHERE id = @id AND user_id = @user{_db.Dialect.ForUpdate}";
+                exists.Bind("@id", deckId);
+                exists.Bind("@user", userId);
+                if (exists.ExecuteScalar() is null) return null;
             }
 
             using (var cmd = conn.CreateCommand())
@@ -342,27 +338,22 @@ public sealed class DeckRepository : IDeckRepository
                         INSERT INTO deck_cards (deck_id, card_id, qty) VALUES (@deck,@card,@qty)
                         ON CONFLICT(deck_id, card_id) DO UPDATE SET qty = excluded.qty
                         """;
-                    cmd.Parameters.AddWithValue("@qty", qty.Value);
+                    cmd.Bind("@qty", qty.Value);
                 }
-                cmd.Parameters.AddWithValue("@deck", deckId);
-                cmd.Parameters.AddWithValue("@card", card.CardId);
+                cmd.Bind("@deck", deckId);
+                cmd.Bind("@card", card.CardId);
                 cmd.ExecuteNonQuery();
             }
 
             using (var touch = conn.CreateCommand())
             {
                 touch.CommandText =
-                    "UPDATE decks SET updated_at = datetime('now') WHERE id = @id";
-                touch.Parameters.AddWithValue("@id", deckId);
+                    $"UPDATE decks SET updated_at = {_db.Dialect.Now} WHERE id = @id";
+                touch.Bind("@id", deckId);
                 touch.ExecuteNonQuery();
             }
 
-            CardRepository.Exec(conn, "COMMIT");
-        }
-        catch
-        {
-            CardRepository.Exec(conn, "ROLLBACK");
-            throw;
+            tx.Commit();
         }
 
         return Detail(conn, userId, deckId);
@@ -371,21 +362,19 @@ public sealed class DeckRepository : IDeckRepository
     public DeckDetail? SetCards(long userId, long deckId, IReadOnlyList<CardQuantity> cards)
     {
         using var conn = _db.Open();
-        CardRepository.Exec(conn, "BEGIN IMMEDIATE");
-        try
+        using (var tx = conn.BeginTransaction())
         {
+            // Locked, because the wipe-and-refill below is two statements: two imports
+            // into one deck at once would otherwise both wipe, then both insert.
             string leaderId;
             using (var exists = conn.CreateCommand())
             {
-                exists.CommandText = "SELECT leader_card_id FROM decks WHERE id = @id AND user_id = @user";
-                exists.Parameters.AddWithValue("@id", deckId);
-                exists.Parameters.AddWithValue("@user", userId);
+                exists.CommandText = "SELECT leader_card_id FROM decks WHERE id = @id AND user_id = @user"
+                                     + _db.Dialect.ForUpdate;
+                exists.Bind("@id", deckId);
+                exists.Bind("@user", userId);
                 var got = exists.ExecuteScalar();
-                if (got is null)
-                {
-                    CardRepository.Exec(conn, "ROLLBACK");
-                    return null;
-                }
+                if (got is null) return null;
                 leaderId = Convert.ToString(got) ?? "";
             }
 
@@ -413,7 +402,7 @@ public sealed class DeckRepository : IDeckRepository
             using (var wipe = conn.CreateCommand())
             {
                 wipe.CommandText = "DELETE FROM deck_cards WHERE deck_id = @deck";
-                wipe.Parameters.AddWithValue("@deck", deckId);
+                wipe.Bind("@deck", deckId);
                 wipe.ExecuteNonQuery();
             }
 
@@ -421,10 +410,9 @@ public sealed class DeckRepository : IDeckRepository
             {
                 insert.CommandText =
                     "INSERT INTO deck_cards (deck_id, card_id, qty) VALUES (@deck,@card,@qty)";
-                var deckParam = insert.Parameters.Add("@deck", SqliteType.Integer);
-                var cardParam = insert.Parameters.Add("@card", SqliteType.Text);
-                var qtyParam = insert.Parameters.Add("@qty", SqliteType.Integer);
-                deckParam.Value = deckId;
+                insert.Bind("@deck", deckId);
+                var cardParam = insert.Bind("@card", null);
+                var qtyParam = insert.Bind("@qty", null);
 
                 foreach (var (cid, qty) in clean)
                 {
@@ -436,26 +424,21 @@ public sealed class DeckRepository : IDeckRepository
 
             using (var touch = conn.CreateCommand())
             {
-                touch.CommandText = """
+                touch.CommandText = $"""
                     UPDATE decks
                     SET leader_card_id = COALESCE(@leader, leader_card_id),
-                        updated_at = datetime('now')
+                        updated_at = {_db.Dialect.Now}
                     WHERE id = @id
                     """;
-                touch.Parameters.AddWithValue("@leader",
+                touch.Bind("@leader",
                     importedLeader is not null && importedLeader != leaderId
                         ? importedLeader
                         : DBNull.Value);
-                touch.Parameters.AddWithValue("@id", deckId);
+                touch.Bind("@id", deckId);
                 touch.ExecuteNonQuery();
             }
 
-            CardRepository.Exec(conn, "COMMIT");
-        }
-        catch
-        {
-            CardRepository.Exec(conn, "ROLLBACK");
-            throw;
+            tx.Commit();
         }
 
         return Detail(conn, userId, deckId);

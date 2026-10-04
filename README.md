@@ -229,10 +229,48 @@ dotnet run --project Manifest -- refresh-catalog   # rebuild from the GitHub dat
 dotnet run --project Manifest -- scrape            # rebuild from the official site
 ```
 
+### PostgreSQL instead of SQLite
+
+For a deployment where more than one copy of the app shares the data, point it at
+PostgreSQL (14 or newer, with the `citext` and `pg_trgm` extensions available —
+both ship with PostgreSQL and every managed provider allows them):
+
+```
+MANIFEST_DATABASE_URL=postgres://user:pass@host:5432/manifest?sslmode=require \
+  dotnet run --project Manifest
+```
+
+The schema is created and kept current by the numbered scripts in
+`Manifest/Data/Migrations/Postgres/`, applied on startup under a lock so several
+containers can start at once. Unset, it stays `sqlite://manifest.db`.
+
+To move an existing collection across, stop the server, keep a copy of
+`manifest.db`, and point the copy at an empty PostgreSQL database:
+
+```
+dotnet run --project Manifest -- migrate-sqlite --postgres "postgres://..."
+```
+
+Accounts, passwords, sessions, decks, requests and scan history all come with their
+ids, so nobody is signed out and invite links already sent keep working. It is one
+transaction that checks its counts before committing, and it refuses a target that
+already has accounts or collections in it. If the file holds rows from before
+accounts existed and also has accounts, it asks whose they are: `--owner <name>`.
+
 ## Tests
 
 ```
 dotnet test Manifest.Tests
+```
+
+To run the same suite against PostgreSQL, give it a server it may create scratch
+databases on (each run makes its own and drops it afterwards):
+
+```
+docker run -d --name manifest-pg -e POSTGRES_USER=manifest -e POSTGRES_PASSWORD=manifest \
+  -p 127.0.0.1:55432:5432 postgres:16-alpine
+MANIFEST_TEST_POSTGRES=postgres://manifest:manifest@127.0.0.1:55432/manifest \
+  dotnet test Manifest.Tests
 ```
 
 85 tests. Most boot a real server on a scratch database and drive it over HTTP:
@@ -250,7 +288,7 @@ if OpenSSL is missing. Cleans up after itself.
 
 | | |
 |---|---|
-| `Manifest/` | the server: HTTP, SQLite, API, scraper and price jobs |
+| `Manifest/` | the server: HTTP, SQLite/PostgreSQL, API, scraper and price jobs |
 | `ui.html` | the interface |
 | `catalog.json` | card data, seeded into the database on first run |
 | `make_cert.sh` | certificate authority and server certificate for the camera |

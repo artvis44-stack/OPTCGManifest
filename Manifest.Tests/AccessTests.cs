@@ -19,6 +19,7 @@ public class AccessTests : IAsyncLifetime
 
     readonly StringBuilder _log = new();
     string _work = "";
+    string? _database;
     Process? _server;
     HttpClient _http = null!;
 
@@ -46,6 +47,10 @@ public class AccessTests : IAsyncLifetime
         // link can make an account.
         info.Environment.Remove("MANIFEST_INVITE_CODE");
         info.Environment["MANIFEST_ADMIN_EMAIL"] = "admin@example.com";
+        info.Environment.Remove("DATABASE_URL");
+        (_database, var databaseUrl) = ServerFixture.CreateTestDatabase();
+        if (databaseUrl is null) info.Environment.Remove("MANIFEST_DATABASE_URL");
+        else info.Environment["MANIFEST_DATABASE_URL"] = databaseUrl;
 
         _server = Process.Start(info)
                   ?? throw new InvalidOperationException("could not start the server");
@@ -97,6 +102,7 @@ public class AccessTests : IAsyncLifetime
         }
         if (_work.Length > 0)
             try { Directory.Delete(_work, recursive: true); } catch { /* best effort */ }
+        ServerFixture.DropTestDatabase(_database);
         return Task.CompletedTask;
     }
 

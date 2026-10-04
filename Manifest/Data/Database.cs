@@ -1,6 +1,8 @@
+using System.Data.Common;
 using System.Text.Json;
 using Manifest.Models;
 using Microsoft.Data.Sqlite;
+using Npgsql;
 
 namespace Manifest.Data;
 
@@ -8,26 +10,131 @@ namespace Manifest.Data;
 /// Hands out connections and owns the schema. The Python original kept one
 /// connection per thread; ADO.NET pools them, so a connection per unit of work is
 /// both simpler and equivalent - the pragmas below are what actually matter.
+///
+/// Which database is decided once, here, from MANIFEST_DATABASE_URL: a sqlite://
+/// path for the single-machine install this started as, or a postgres:// URL for a
+/// deployment where several app containers share one database. The repositories
+/// above this see a DbConnection and a <see cref="SqlDialect"/> and nothing else.
 /// </summary>
 public sealed class Database
 {
-    readonly string _connectionString;
+    readonly string _connectionString = "";
+    readonly NpgsqlDataSource? _postgres;
     readonly AppPaths _paths;
 
-    public Database(AppPaths paths)
+    public SqlDialect Dialect { get; }
+
+    /// <summary>Where the data is, for the startup banner. Never includes a password.</summary>
+    public string Description { get; }
+
+    public Database(AppPaths paths) : this(paths, AppConfig.DatabaseUrlFromEnvironment()) { }
+
+    public Database(AppPaths paths, string url)
     {
         _paths = paths;
+
+        if (ParsePostgres(url) is { } pg)
+        {
+            Dialect = SqlDialect.Postgres;
+            _postgres = NpgsqlDataSource.Create(pg);
+            Description = $"PostgreSQL at {pg.Host}:{pg.Port}/{pg.Database}";
+            return;
+        }
+
+        Dialect = SqlDialect.Sqlite;
+        var file = SqlitePath(paths, url);
         _connectionString = new SqliteConnectionStringBuilder
         {
-            DataSource = paths.DbPath,
+            DataSource = file,
             Mode = SqliteOpenMode.ReadWriteCreate,
             Pooling = true,
             DefaultTimeout = 15,
         }.ToString();
+        SqliteFile = file;
+        Description = $"SQLite at {file}";
     }
 
-    public SqliteConnection Open()
+    /// <summary>The database file, or null when the data lives in PostgreSQL.</summary>
+    public string? SqliteFile { get; }
+
+    /// <summary>Whether <paramref name="url"/> is one this class knows how to open.</summary>
+    public static string? RejectUrl(string url)
     {
+        try
+        {
+            if (ParsePostgres(url) is not null) return null;
+            if (url.StartsWith("sqlite://", StringComparison.OrdinalIgnoreCase)) return null;
+        }
+        catch (Exception e) when (e is ArgumentException or FormatException or UriFormatException)
+        {
+            return $"MANIFEST_DATABASE_URL could not be read: {e.Message}";
+        }
+        return "MANIFEST_DATABASE_URL must start with sqlite://, postgres:// or postgresql://, "
+               + "or be an Npgsql connection string (Host=...;Database=...).";
+    }
+
+    /// <summary>
+    /// sqlite://manifest.db is relative to the root, as manifest.db always was;
+    /// sqlite:///var/lib/manifest.db is absolute.
+    /// </summary>
+    static string SqlitePath(AppPaths paths, string url)
+    {
+        var rest = url.StartsWith("sqlite://", StringComparison.OrdinalIgnoreCase)
+            ? url["sqlite://".Length..]
+            : "";
+        if (rest.Length == 0 || rest == "manifest.db") return paths.DbPath;
+        return Path.Combine(paths.Root, rest);
+    }
+
+    /// <summary>
+    /// postgres://user:pass@host:port/db?sslmode=require, the form every hosting
+    /// provider hands out, or an Npgsql keyword string for anything that form cannot
+    /// say. Null when <paramref name="url"/> is neither.
+    /// </summary>
+    static NpgsqlConnectionStringBuilder? ParsePostgres(string url)
+    {
+        if (url.StartsWith("postgres://", StringComparison.OrdinalIgnoreCase)
+            || url.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase))
+        {
+            var uri = new Uri(url);
+            var b = new NpgsqlConnectionStringBuilder
+            {
+                Host = uri.Host,
+                Port = uri.IsDefaultPort || uri.Port <= 0 ? 5432 : uri.Port,
+                Database = Uri.UnescapeDataString(uri.AbsolutePath.TrimStart('/')),
+            };
+            if (uri.UserInfo.Length > 0)
+            {
+                var colon = uri.UserInfo.IndexOf(':');
+                b.Username = Uri.UnescapeDataString(colon < 0 ? uri.UserInfo : uri.UserInfo[..colon]);
+                if (colon >= 0) b.Password = Uri.UnescapeDataString(uri.UserInfo[(colon + 1)..]);
+            }
+            if (string.IsNullOrEmpty(b.Database))
+                throw new ArgumentException("the URL names no database");
+
+            foreach (var pair in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var eq = pair.IndexOf('=');
+                var key = Uri.UnescapeDataString(eq < 0 ? pair : pair[..eq]);
+                var value = eq < 0 ? "" : Uri.UnescapeDataString(pair[(eq + 1)..]);
+                // libpq spells it sslmode; Npgsql spells it SSL Mode. Anything else
+                // is passed through under the name it was given.
+                b[key.Equals("sslmode", StringComparison.OrdinalIgnoreCase) ? "SSL Mode" : key] = value;
+            }
+            return b;
+        }
+
+        if (url.Contains("Host=", StringComparison.OrdinalIgnoreCase)
+            || url.Contains("Server=", StringComparison.OrdinalIgnoreCase))
+            return new NpgsqlConnectionStringBuilder(url);
+
+        return null;
+    }
+
+    public DbConnection Open()
+    {
+        if (_postgres is not null) return _postgres.OpenConnection();
+
         var conn = new SqliteConnection(_connectionString);
         conn.Open();
         using var pragma = conn.CreateCommand();
@@ -237,24 +344,48 @@ public sealed class Database
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// Brings the schema up to date without touching the data in it: the versioned
+    /// migrations on PostgreSQL, the column-sniffing upgrade on SQLite.
+    /// </summary>
+    public void EnsureSchema()
+    {
+        using var conn = Open();
+        if (Dialect.IsPostgres)
+        {
+            foreach (var version in PostgresMigrations.Apply(conn))
+                Console.WriteLine($"migrated: applied {version}");
+
+            // Npgsql learnt the database's types on the first connection, which may
+            // have been before the migrations created citext - and is, on a container
+            // that started while another one was migrating. Without this it cannot
+            // read a username back.
+            ((NpgsqlConnection)conn).ReloadTypes();
+        }
+        else
+        {
+            conn.Exec(Schema);
+            Migrate((SqliteConnection)conn);
+        }
+    }
+
     /// <summary>Creates the schema, and seeds the catalogue if it is empty.</summary>
     /// <returns>An error message to exit with, or null on success.</returns>
     public string? Initialise(bool forceReseed)
     {
+        EnsureSchema();
         using var conn = Open();
-        using (var create = conn.CreateCommand())
-        {
-            create.CommandText = Schema;
-            create.ExecuteNonQuery();
-        }
 
-        Migrate(conn);
+        // Counted and seeded under one lock, so two containers starting on an empty
+        // database do not both decide it needs seeding and both fill it.
+        using var tx = conn.BeginTransaction();
+        Dialect.Lock(conn, "manifest:catalog-seed");
 
         long have;
         using (var count = conn.CreateCommand())
         {
             count.CommandText = "SELECT count(*) FROM catalog";
-            have = (long)count.ExecuteScalar()!;
+            have = Convert.ToInt64(count.ExecuteScalar());
         }
 
         if (have != 0 && !forceReseed)
@@ -270,12 +401,7 @@ public sealed class Database
         using (var stream = File.OpenRead(_paths.Catalog))
             rows = JsonSerializer.Deserialize<List<CatalogRow>>(stream, Json.Options) ?? new();
 
-        using var tx = conn.BeginTransaction();
-        using (var wipe = conn.CreateCommand())
-        {
-            wipe.CommandText = "DELETE FROM catalog";
-            wipe.ExecuteNonQuery();
-        }
+        conn.Exec("DELETE FROM catalog");
 
         using var insert = conn.CreateCommand();
         insert.CommandText = """
@@ -285,12 +411,14 @@ public sealed class Database
             VALUES (@card_id,@base_id,@variant,@name,@set_label,@set_name,@rarity,
                     @category,@colors,@cost,@power,@counter,@types,@effect,@image_url)
             """;
+        // Untyped, so each provider infers from the value: SQLite would take text for
+        // the numeric columns and convert it, PostgreSQL would refuse.
         var p = new[]
         {
             "@card_id", "@base_id", "@variant", "@name", "@set_label", "@set_name",
             "@rarity", "@category", "@colors", "@cost", "@power", "@counter",
             "@types", "@effect", "@image_url",
-        }.Select(n => insert.Parameters.Add(new SqliteParameter(n, SqliteType.Text))).ToArray();
+        }.Select(n => insert.Bind(n, null)).ToArray();
 
         foreach (var r in rows)
         {

@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Manifest.Models;
 using Manifest.Services;
-using Microsoft.Data.Sqlite;
+using System.Data.Common;
 
 namespace Manifest.Data;
 
@@ -58,11 +58,11 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
         return ById(conn, id);
     }
 
-    static User? ById(SqliteConnection conn, long id)
+    static User? ById(DbConnection conn, long id)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT * FROM users WHERE id = @id";
-        cmd.Parameters.AddWithValue("@id", id);
+        cmd.Bind("@id", id);
         using var r = cmd.ExecuteReader();
         return r.Read() ? Read(r) : null;
     }
@@ -71,8 +71,8 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
     {
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM users WHERE username = @n";
-        cmd.Parameters.AddWithValue("@n", username.Trim());
+        cmd.CommandText = $"SELECT * FROM users WHERE username = {_db.Dialect.Nocase("@n")}";
+        cmd.Bind("@n", username.Trim());
         using var r = cmd.ExecuteReader();
         return r.Read() ? Read(r) : null;
     }
@@ -88,7 +88,7 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
         return users;
     }
 
-    static User Read(SqliteDataReader r) => new()
+    static User Read(DbDataReader r) => new()
     {
         Id = r.Long("id"),
         Username = r.Text("username"),
@@ -121,13 +121,13 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
         var hash = Passwords.Hash(password);
 
         using var conn = _db.Open();
-        CardRepository.Exec(conn, "BEGIN IMMEDIATE");
         try
         {
+            using var tx = conn.BeginTransaction();
             using (var clash = conn.CreateCommand())
             {
-                clash.CommandText = "SELECT 1 FROM users WHERE username = @n";
-                clash.Parameters.AddWithValue("@n", name);
+                clash.CommandText = $"SELECT 1 FROM users WHERE username = {_db.Dialect.Nocase("@n")}";
+                clash.Bind("@n", name);
                 if (clash.ExecuteScalar() is not null)
                     throw new AccountError("That username is taken.");
             }
@@ -136,45 +136,42 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
             using (var cmd = conn.CreateCommand())
             {
                 cmd.CommandText = """
-                    INSERT INTO users (username, password_hash, email) VALUES (@n, @h, @e);
-                    SELECT last_insert_rowid();
+                    INSERT INTO users (username, password_hash, email) VALUES (@n, @h, @e)
+                    RETURNING id
                     """;
-                cmd.Parameters.AddWithValue("@n", name);
-                cmd.Parameters.AddWithValue("@h", hash);
-                cmd.Parameters.AddWithValue("@e", (object?)address ?? DBNull.Value);
+                cmd.Bind("@n", name);
+                cmd.Bind("@h", hash);
+                cmd.Bind("@e", (object?)address ?? DBNull.Value);
                 id = Convert.ToInt64(cmd.ExecuteScalar());
             }
 
             // First account in: take ownership of the pre-accounts data.
             if (id == 1) Claim(conn, id);
 
-            CardRepository.Exec(conn, "COMMIT");
+            tx.Commit();
             return new User { Id = id, Username = name, Email = address, IsOwner = id == 1 };
         }
-        catch (SqliteException e) when (e.SqliteErrorCode == 19)
+        catch (Exception e) when (SqlDialect.UniqueViolation(e) is { } constraint)
         {
-            // 19 is SQLITE_CONSTRAINT. The only constraint reachable here that the
-            // explicit check above does not already cover is the unique index on
-            // email, so this is a second account for one address.
-            CardRepository.Exec(conn, "ROLLBACK");
-            throw new AccountError("There is already an account for that email address.");
-        }
-        catch
-        {
-            CardRepository.Exec(conn, "ROLLBACK");
-            throw;
+            // On SQLite the check above runs under BEGIN IMMEDIATE, so the only
+            // constraint left to trip is the one on email. PostgreSQL lets another
+            // sign-up slip in between the check and the insert, so the username's
+            // own constraint can fire too, and is told apart by name.
+            throw new AccountError(constraint.Contains("username", StringComparison.OrdinalIgnoreCase)
+                ? "That username is taken."
+                : "There is already an account for that email address.");
         }
     }
 
-    static void Claim(SqliteConnection conn, long userId)
+    static void Claim(DbConnection conn, long userId)
     {
         var moved = 0;
         foreach (var table in new[] { "collection", "decks", "scan_log" })
         {
             using var cmd = conn.CreateCommand();
             cmd.CommandText = $"UPDATE {table} SET user_id = @u WHERE user_id = @unclaimed";
-            cmd.Parameters.AddWithValue("@u", userId);
-            cmd.Parameters.AddWithValue("@unclaimed", Database.Unclaimed);
+            cmd.Bind("@u", userId);
+            cmd.Bind("@unclaimed", Database.Unclaimed);
             moved += cmd.ExecuteNonQuery();
         }
         if (moved > 0)
@@ -193,8 +190,8 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
 
         using (var cmd = conn.CreateCommand())
         {
-            cmd.CommandText = "SELECT * FROM users WHERE username = @n";
-            cmd.Parameters.AddWithValue("@n", name);
+            cmd.CommandText = $"SELECT * FROM users WHERE username = {_db.Dialect.Nocase("@n")}";
+            cmd.Bind("@n", name);
             using var r = cmd.ExecuteReader();
             if (r.Read())
             {
@@ -210,8 +207,8 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
         using (var seen = conn.CreateCommand())
         {
             seen.CommandText = "UPDATE users SET last_seen = @now WHERE id = @id";
-            seen.Parameters.AddWithValue("@now", Stamp(_clock.UtcNow));
-            seen.Parameters.AddWithValue("@id", user.Id);
+            seen.Bind("@now", Stamp(_clock.UtcNow));
+            seen.Bind("@id", user.Id);
             seen.ExecuteNonQuery();
         }
         return user;
@@ -226,8 +223,8 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
             UPDATE users SET password_hash = @h WHERE id = @id;
             DELETE FROM sessions WHERE user_id = @id;
             """;
-        cmd.Parameters.AddWithValue("@h", Passwords.Hash(password));
-        cmd.Parameters.AddWithValue("@id", userId);
+        cmd.Bind("@h", Passwords.Hash(password));
+        cmd.Bind("@id", userId);
         cmd.ExecuteNonQuery();
     }
 
@@ -238,8 +235,7 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
         if (user is null) return false;
 
         using var conn = _db.Open();
-        CardRepository.Exec(conn, "BEGIN IMMEDIATE");
-        try
+        using (var tx = conn.BeginTransaction())
         {
             using (var cmd = conn.CreateCommand())
             {
@@ -254,15 +250,10 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
                     DELETE FROM sessions WHERE user_id = @id;
                     DELETE FROM users WHERE id = @id;
                     """;
-                cmd.Parameters.AddWithValue("@id", user.Id);
+                cmd.Bind("@id", user.Id);
                 cmd.ExecuteNonQuery();
             }
-            CardRepository.Exec(conn, "COMMIT");
-        }
-        catch
-        {
-            CardRepository.Exec(conn, "ROLLBACK");
-            throw;
+            tx.Commit();
         }
         return true;
     }
@@ -283,9 +274,9 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
             INSERT INTO sessions (token_hash, user_id, expires_at)
             VALUES (@t, @u, @e)
             """;
-        cmd.Parameters.AddWithValue("@t", Digest(token));
-        cmd.Parameters.AddWithValue("@u", userId);
-        cmd.Parameters.AddWithValue("@e", Stamp(now + SessionLife));
+        cmd.Bind("@t", Digest(token));
+        cmd.Bind("@u", userId);
+        cmd.Bind("@e", Stamp(now + SessionLife));
         cmd.ExecuteNonQuery();
         return token;
     }
@@ -307,8 +298,8 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
                 SELECT user_id FROM sessions
                 WHERE token_hash = @t AND expires_at > @now
                 """;
-            cmd.Parameters.AddWithValue("@t", Digest(token));
-            cmd.Parameters.AddWithValue("@now", Stamp(now));
+            cmd.Bind("@t", Digest(token));
+            cmd.Bind("@now", Stamp(now));
             var found = cmd.ExecuteScalar();
             if (found is null or DBNull) return null;
             userId = Convert.ToInt64(found);
@@ -320,9 +311,9 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
                 UPDATE sessions SET last_seen = @now, expires_at = @e
                 WHERE token_hash = @t
                 """;
-            touch.Parameters.AddWithValue("@now", Stamp(now));
-            touch.Parameters.AddWithValue("@e", Stamp(now + SessionLife));
-            touch.Parameters.AddWithValue("@t", Digest(token));
+            touch.Bind("@now", Stamp(now));
+            touch.Bind("@e", Stamp(now + SessionLife));
+            touch.Bind("@t", Digest(token));
             touch.ExecuteNonQuery();
         }
 
@@ -335,7 +326,7 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "DELETE FROM sessions WHERE token_hash = @t";
-        cmd.Parameters.AddWithValue("@t", Digest(token));
+        cmd.Bind("@t", Digest(token));
         cmd.ExecuteNonQuery();
     }
 
@@ -345,15 +336,14 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "DELETE FROM sessions WHERE expires_at <= @now";
-        cmd.Parameters.AddWithValue("@now", Stamp(_clock.UtcNow));
+        cmd.Bind("@now", Stamp(_clock.UtcNow));
         return cmd.ExecuteNonQuery();
     }
 
     static string Digest(string token) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token))).ToLowerInvariant();
 
-    /// <summary>SQLite's datetime('now') format, so string comparison sorts by time.</summary>
-    static string Stamp(DateTime utc) => utc.ToString("yyyy-MM-dd HH:mm:ss");
+    object Stamp(DateTime utc) => _db.Dialect.Time(utc);
 
     static string Base64Url(byte[] bytes) =>
         Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');

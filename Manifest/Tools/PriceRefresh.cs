@@ -1,7 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Manifest.Data;
-using Microsoft.Data.Sqlite;
 
 namespace Manifest.Tools;
 
@@ -38,7 +37,7 @@ public static class PriceRefresh
 
     public static async Task<int> Run(AppPaths paths, Database db)
     {
-        if (!File.Exists(paths.DbPath))
+        if (db.SqliteFile is { } file && !File.Exists(file))
         {
             Console.Error.WriteLine("manifest.db not found. Run the server once first to create it.");
             return 1;
@@ -93,32 +92,31 @@ public static class PriceRefresh
         }
 
         using var conn = db.Open();
-        using (var create = conn.CreateCommand())
-        {
-            create.CommandText = """
+        // An old SQLite file may predate the prices table. PostgreSQL's comes from
+        // the migrations, like every other table there.
+        if (!db.Dialect.IsPostgres)
+            conn.Exec("""
                 CREATE TABLE IF NOT EXISTS prices (
                     card_id    TEXT PRIMARY KEY,
                     usd        REAL,
                     gbp        REAL,
                     fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
                 )
-                """;
-            create.ExecuteNonQuery();
-        }
+                """);
 
         using (var tx = conn.BeginTransaction())
         {
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = """
+            cmd.CommandText = $"""
                 INSERT INTO prices (card_id, usd, gbp, fetched_at)
-                VALUES (@id,@usd,@gbp,datetime('now'))
+                VALUES (@id,@usd,@gbp,{db.Dialect.Now})
                 ON CONFLICT(card_id) DO UPDATE
                   SET usd = excluded.usd, gbp = excluded.gbp,
                       fetched_at = excluded.fetched_at
                 """;
-            var id = cmd.Parameters.Add(new SqliteParameter("@id", SqliteType.Text));
-            var usd = cmd.Parameters.Add(new SqliteParameter("@usd", SqliteType.Real));
-            var gbp = cmd.Parameters.Add(new SqliteParameter("@gbp", SqliteType.Real));
+            var id = cmd.Bind("@id", null);
+            var usd = cmd.Bind("@usd", null);
+            var gbp = cmd.Bind("@gbp", null);
             foreach (var (cardId, u, g) in rows.Values)
             {
                 id.Value = cardId; usd.Value = u; gbp.Value = g;
