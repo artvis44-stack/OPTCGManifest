@@ -27,7 +27,7 @@ public class TlsSetupTests : IAsyncLifetime
         }
 
         _work = Directory.CreateTempSubdirectory("manifest-tls-").FullName;
-        foreach (var f in new[] { "ui.html", "catalog.json", "make_cert.sh" })
+        foreach (var f in new[] { "catalog.json", "make_cert.sh" })
             File.Copy(Path.Combine(ServerFixture.RepoRoot, f), Path.Combine(_work, f));
 
         var make = Process.Start(new ProcessStartInfo("sh", "make_cert.sh")

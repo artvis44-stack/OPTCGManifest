@@ -26,7 +26,7 @@ public class AccessTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         _work = Directory.CreateTempSubdirectory("manifest-access-").FullName;
-        foreach (var f in new[] { "ui.html", "catalog.json" })
+        foreach (var f in new[] { "catalog.json" })
             File.Copy(Path.Combine(ServerFixture.RepoRoot, f), Path.Combine(_work, f));
 
         var info = new ProcessStartInfo

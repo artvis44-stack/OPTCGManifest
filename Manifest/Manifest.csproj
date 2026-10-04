@@ -11,14 +11,18 @@
 
   <ItemGroup>
     <PackageReference Include="Anthropic" Version="12.40.0" />
+    <PackageReference Include="AWSSDK.S3" Version="3.7.410.4" />
     <PackageReference Include="MailKit" Version="4.17.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
     <PackageReference Include="Npgsql" Version="8.0.6" />
+    <PackageReference Include="StackExchange.Redis" Version="2.8.16" />
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Data/Migrations/Postgres/*.sql"
-                      LogicalName="Manifest.Data.Migrations.Postgres.%(Filename)%(Extension)" />
+    <!-- The front end ships inside the binary; see Web/WebAssets.cs. -->
+    <Content Remove="wwwroot/**" />
+    <EmbeddedResource Include="wwwroot/**" LogicalName="wwwroot/%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Data/Migrations/Postgres/*.sql" LogicalName="Manifest.Data.Migrations.Postgres.%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

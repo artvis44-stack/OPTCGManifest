@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E2A33">
+<title>Manifest — One Piece TCG</title>
+<link rel="stylesheet" href="/css/app.css">
+<script src="/js/api.js" defer></script>
+<script src="/js/cards.js" defer></script>
+<script src="/js/collection.js" defer></script>
+<script src="/js/decks.js" defer></script>
+<script src="/js/scan.js" defer></script>
+<script src="/js/session.js" defer></script>
+</head>
+<body data-tab="tabLog">
+<div class="app">
+
+<header class="topbar">
+  <div class="inner">
+    <div class="brand">
+      <svg viewBox="0 0 48 32" aria-hidden="true" focusable="false">
+        <ellipse cx="24" cy="24.5" rx="22" ry="6.6" fill="#D9BA72"/>
+        <ellipse cx="24" cy="23.2" rx="22" ry="6.6" fill="#F0D793"/>
+        <path d="M9 24 C9 9 16 3 24 3 C32 3 39 9 39 24 Z" fill="#EFD189"/>
+        <path d="M9 24 C9 9 16 3 24 3 C28 3 24 10 24 24 Z" fill="#F7E3AE"/>
+        <path d="M9.4 20.4 C16 17.6 32 17.6 38.6 20.4 L38.2 24.2 C32 21.2 16 21.2 9.8 24.2 Z" fill="#C8403A"/>
+      </svg>
+      <div>
+        <h1>Manifest</h1>
+        <div class="sub">One Piece TCG &middot; self-hosted</div>
+      </div>
+    </div>
+
+    <nav role="tablist">
+      <button id="tabLog"  role="tab" aria-selected="true">Log cards</button>
+      <button id="tabOwn"  role="tab" aria-selected="false">My cards</button>
+      <button id="tabDeck" role="tab" aria-selected="false">Decks</button>
+      <button id="tabScan" role="tab" aria-selected="false">Scan</button>
+    </nav>
+
+    <div class="tot">
+      <b id="tTotal">0</b>
+      <div><span id="tUniq">0 unique</span><span id="tValue"></span></div>
+    </div>
+
+    <div class="who" id="who" hidden>
+      <span id="whoName"></span>
+      <button type="button" id="signOut" title="Sign out">Sign out</button>
+    </div>
+  </div>
+</header>
+
+<div class="shell">
+<main class="wrap">
+
+<!-- LOG -->
+<section id="paneLog">
+  <div class="panel">
+    <div class="panelHead">
+      <h2>Log cards</h2>
+      <span class="sm">type a number, press Enter</span>
+      <div class="viewtoggle" id="viewLog" role="group" aria-label="Result layout">
+        <button type="button" data-view="grid" class="on">Grid</button>
+        <button type="button" data-view="list">List</button>
+      </div>
+    </div>
+    <div class="searchrow">
+      <input id="q" placeholder="OP01-016 or Nami" autocomplete="off"
+             autocapitalize="characters" spellcheck="false">
+      <button id="qGo">+1</button>
+    </div>
+    <div class="filterrow">
+      <select id="fCategory" aria-label="Filter by type">
+        <option value="">All types</option>
+      </select>
+      <select id="fColor" aria-label="Filter by colour">
+        <option value="">All colours</option>
+      </select>
+      <select id="fSet" aria-label="Filter by set">
+        <option value="">All sets</option>
+      </select>
+      <select id="fRarity" aria-label="Filter by rarity">
+        <option value="">All rarities</option>
+      </select>
+    </div>
+    <div class="sortrow">
+      <label for="sortResults">Sort</label>
+      <select id="sortResults" aria-label="Sort by">
+        <option value="number">Number</option>
+        <option value="colors">Colour</option>
+        <option value="set_label">Set</option>
+        <option value="types">Subtype</option>
+        <option value="price_gbp">Price (high&ndash;low)</option>
+        <option value="qty">Owned first</option>
+        <option value="not_owned">Not owned first</option>
+      </select>
+    </div>
+	    <p class="tip">Type a number and press Enter to log one copy, or search a name and use the
+	       &minus;/+ on a card. Click any card to open its dossier. Alt arts are listed separately;
+	       leave the box empty and use the filters to browse.</p>
+	    <details class="bulkBox" id="bulkLogBox">
+	      <summary>Log deck list</summary>
+	      <textarea id="bulkLogText" spellcheck="false"
+	        placeholder="1x EB01-001&#10;4 OP01-016&#10;OP01-016_p1 x2"></textarea>
+	      <div class="tools">
+	        <button id="btnBulkLog" type="button">Log list</button>
+	        <button id="btnBulkLogClear" type="button" class="ghost">Clear</button>
+	      </div>
+	      <div class="status" id="bulkLogStatus"></div>
+	    </details>
+	  </div>
+	  <div id="results"></div>
+	</section>
+
+<!-- OWNED -->
+<section id="paneOwn" hidden>
+  <div class="panel">
+    <div class="panelHead">
+      <h2>My cards</h2>
+      <span class="sm">everything you’ve logged</span>
+      <div class="viewtoggle" id="viewOwn" role="group" aria-label="Result layout">
+        <button type="button" data-view="grid" class="on">Grid</button>
+        <button type="button" data-view="list">List</button>
+      </div>
+    </div>
+    <div class="searchrow">
+      <input id="filter" placeholder="Filter what you own" autocomplete="off">
+    </div>
+    <div class="filterrow">
+      <select id="fCategoryOwn" aria-label="Filter by type">
+        <option value="">All types</option>
+      </select>
+      <select id="fColorOwn" aria-label="Filter by colour">
+        <option value="">All colours</option>
+      </select>
+      <select id="fSetOwn" aria-label="Filter by set">
+        <option value="">All sets</option>
+      </select>
+      <select id="fRarityOwn" aria-label="Filter by rarity">
+        <option value="">All rarities</option>
+      </select>
+    </div>
+    <div class="sortrow">
+      <label for="sortOwned">Sort</label>
+      <select id="sortOwned" aria-label="Sort by">
+        <option value="number">Number</option>
+        <option value="colors">Colour</option>
+        <option value="set_label">Set</option>
+        <option value="types">Subtype</option>
+        <option value="price_gbp">Price (high&ndash;low)</option>
+        <option value="qty">Qty (high&ndash;low)</option>
+      </select>
+    </div>
+  </div>
+  <div id="owned"></div>
+  <div class="setgrid" id="setBreak"></div>
+  <div class="tools">
+    <a href="/api/export.csv" download>Export CSV</a>
+    <button id="btnReset">Clear everything</button>
+  </div>
+</section>
+
+<!-- DECK -->
+<section id="paneDeck" hidden>
+
+  <div id="deckListView">
+    <div class="panel">
+      <div class="panelHead"><h2>Decks</h2><span class="sm">leader-locked, 50 cards</span></div>
+    <p class="tip flushTop">Pick a Leader to start a deck. The card list locks to your Leader's
+       colours, and the curve/composition guide below tells you if you're on target.</p>
+    <div class="tools"><button id="btnNewDeck">+ New deck</button></div>
+    </div>
+    <div class="deckgrid" id="deckList"></div>
+  </div>
+
+  <div id="deckLeaderPick" hidden>
+    <button class="ghost backBtn" id="btnLeaderPickBack">&larr; Back</button>
+    <div class="panel">
+    <div class="panelHead"><h2>Choose a leader</h2><span class="sm">sets the deck’s colours</span></div>
+    <div class="searchrow">
+      <input id="qLeader" placeholder="Search leaders by name" autocomplete="off"
+             autocapitalize="characters" spellcheck="false">
+    </div>
+    <div class="filterrow">
+      <select id="fColorLeader" aria-label="Filter by colour"><option value="">All colours</option></select>
+      <select id="fOwnedLeader" aria-label="Filter by ownership">
+        <option value="">Owned + not owned</option>
+        <option value="1">Owned only</option>
+        <option value="0">Not owned only</option>
+      </select>
+    </div>
+    </div>
+    <div id="leaderResults"></div>
+  </div>
+
+  <div id="deckEditView" hidden>
+    <button class="ghost backBtn" id="btnDeckBack">&larr; All decks</button>
+	    <div class="deckHead" id="deckHead"></div>
+	    <div class="deckLegal" id="deckLegal"></div>
+	    <div class="deckGuide panel" id="deckGuide"></div>
+	    <details class="bulkBox" id="deckImportBox">
+	      <summary>Import deck list</summary>
+	      <textarea id="deckImportText" spellcheck="false"
+	        placeholder="1x EB01-001&#10;4 OP01-004&#10;OP01-004_p1 x1"></textarea>
+	      <div class="tools">
+	        <button id="btnDeckImport" type="button">Replace cards</button>
+	        <button id="btnDeckImportClear" type="button" class="ghost">Clear</button>
+	      </div>
+	      <div class="status" id="deckImportStatus"></div>
+	    </details>
+
+	    <div class="deckWorkspace">
+      <div class="previewPanel" id="previewPanel">
+        <div class="empty">Hover or tap a card to open its dossier here.</div>
+      </div>
+
+      <div class="deckGridPanel">
+        <h3>In this deck <span class="sm" id="deckCardsCount"></span></h3>
+        <p class="tip">Tap a card to remove one copy. Numbers: top = owned, bottom = in deck.</p>
+        <div class="cgrid" id="deckCardsGrid"></div>
+      </div>
+
+      <div class="addGridPanel">
+        <h3>Add cards <span class="sm" id="deckColorNote"></span></h3>
+        <div class="searchrow">
+          <input id="qDeck" placeholder="Search by name or number" autocomplete="off"
+                 autocapitalize="characters" spellcheck="false">
+        </div>
+        <div class="filterrow">
+          <select id="fCategoryDeck" aria-label="Filter by type">
+            <option value="">All types</option>
+            <option value="Character">Character</option>
+            <option value="Event">Event</option>
+            <option value="Stage">Stage</option>
+          </select>
+          <select id="fSetDeck" aria-label="Filter by set"><option value="">All sets</option></select>
+          <select id="fRarityDeck" aria-label="Filter by rarity"><option value="">All rarities</option></select>
+          <select id="fOwnedDeck" aria-label="Filter by ownership">
+            <option value="">Owned + not owned</option>
+            <option value="1">Owned only</option>
+            <option value="0">Not owned only</option>
+          </select>
+        </div>
+        <div class="sortrow">
+          <label for="sortDeckBrowse">Sort</label>
+          <select id="sortDeckBrowse" aria-label="Sort by">
+            <option value="number">Number</option>
+            <option value="colors">Colour</option>
+            <option value="set_label">Set</option>
+            <option value="price_gbp">Price (high–low)</option>
+            <option value="qty">Owned first</option>
+            <option value="not_owned">Not owned first</option>
+          </select>
+        </div>
+        <p class="tip">Tap a card to add one copy.</p>
+        <div class="cgrid" id="deckBrowseGrid"></div>
+      </div>
+    </div>
+
+    <div class="deckSection">
+      <h3>Shopping list <span class="sm" id="buyTotal"></span></h3>
+      <p class="tip" id="buyTip">Cards you don't own enough of yet, priced at current market.</p>
+      <div id="buyList"></div>
+    </div>
+
+    <button id="btnDeckDelete" class="ghost fullWidth">Delete this deck</button>
+  </div>
+
+</section>
+
+<!-- SCAN -->
+<section id="paneScan" hidden>
+  <div class="panel narrow">
+    <div class="panelHead"><h2>Scan a card</h2><span class="sm">reads the number, bottom-right</span></div>
+    <p class="tip flush">Photograph the card’s number corner up close &mdash; it reads far
+       more reliably than the whole card.</p>
+  </div>
+  <div class="finder" id="finder">
+    <div class="msg" id="finderMsg">Tap <b>Photo</b> below — it opens your camera app
+      and works right now, no setup needed. <b>Zoom or move in close so the bottom-right
+      corner alone fills the frame</b> — just the number, not the rest of the card —
+      it reads far more reliably that way. <b>Live camera</b> is optional and needs a
+      one-time HTTPS setup on this network.</div>
+    <video id="video" playsinline muted hidden></video>
+    <div class="bk tl"></div><div class="bk tr"></div>
+    <div class="bk bl"></div><div class="bk br"></div>
+    <div class="guide" id="guide"><span>card number here</span></div>
+  </div>
+  <div class="scanbtns">
+    <button id="btnFile">Photo</button>
+    <button class="ghost" id="btnCam">Live camera</button>
+    <button class="ghost" id="btnShoot" disabled>Read card</button>
+    <input type="file" id="file" accept="image/*" capture="environment" hidden>
+  </div>
+  <div class="status" id="status"></div>
+  <div id="hit"></div>
+</section>
+
+</main>
+
+<aside class="inspector" id="inspector">
+  <div class="idle" id="inspectorIdle">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="4.5" y="2.5" width="15" height="19" rx="2"/>
+      <path d="M8 7h8M8 11h8M8 15h5"/>
+    </svg>
+    <div>Pick a card to open its dossier.</div>
+  </div>
+</aside>
+</div><!-- /shell -->
+
+<p class="foot" id="foot"></p>
+</div><!-- /app -->
+
+<div id="modalHost"></div>
+</body>
+</html>

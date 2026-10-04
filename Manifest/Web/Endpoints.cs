@@ -2,6 +2,7 @@ using System.Text.Json;
 using Manifest.Data;
 using Manifest.Models;
 using Manifest.Services;
+using Manifest.Services.Jobs;
 
 namespace Manifest.Web;
 
@@ -18,9 +19,10 @@ public static class Endpoints
         "/api/access/invite", "/api/access/requests",
         "/api/access/requests/<id>/approve", "/api/access/requests/<id>/deny",
         "/api/search", "/api/facets", "/api/card/<card-id>",
-        "/api/collection", "/api/collection/bulk", "/api/stats", "/api/export.csv",
+        "/api/collection", "/api/collection/bulk", "/api/collection/stats", "/api/stats",
+        "/api/export.csv",
         "/api/decks", "/api/decks/<id>", "/api/decks/<id>/card",
-        "/api/decks/<id>/cards", "/api/decks/<id>/delete",
+        "/api/decks/<id>/cards", "/api/decks/<id>/delete", "/api/scan", "/api/scan/<id>",
     };
 
     public static void Map(WebApplication app)
@@ -58,6 +60,7 @@ public static class Endpoints
         var access = app.Services.GetRequiredService<AccessRepository>();
         var config = app.Services.GetRequiredService<AppConfig>();
         var database = app.Services.GetRequiredService<Database>();
+        var assets = app.Services.GetRequiredService<WebAssets>();
 
         // The one route that answers differently to a stranger: the app for an
         // account, the sign-in page for anyone else.
@@ -65,32 +68,43 @@ public static class Endpoints
         {
             if (ctx.User() is null)
             {
-                await ctx.Text(200, LoginPage.Html, "text/html; charset=utf-8");
+                await ctx.Html(200, LoginPage.Html);
                 return;
             }
-            await ctx.Send(200, await File.ReadAllBytesAsync(paths.Ui), "text/html; charset=utf-8");
+            await assets.Serve(ctx, "index.html");
         }
 
         app.MapGet("/", Ui);
         app.MapGet("/index.html", Ui);
+        app.MapGet("/css/{**path}", (HttpContext ctx, string path) => assets.Serve(ctx, "css/" + path));
+        app.MapGet("/js/{**path}", (HttpContext ctx, string path) => assets.Serve(ctx, "js/" + path));
 
         app.MapGet("/img/{**cardId}", async (HttpContext ctx, string cardId) =>
         {
-            var got = await images.Get(cardId.Replace(".png", ""));
-            if (got is null)
+            var got = await images.Get(cardId.Replace(".png", ""), ctx.TraceIdentifier);
+            switch (got.State)
             {
-                await ctx.Send(404, Array.Empty<byte>(), "text/plain");
-                return;
+                case ImageCache.State.Found:
+                    await ctx.Send(200, got.Bytes!, "image/png", new[]
+                    {
+                        ("Cache-Control", "public, max-age=31536000, immutable"),
+                    });
+                    return;
+                case ImageCache.State.Pending:
+                    // Being fetched now. Not cached, so asking again finds it.
+                    await ctx.Send(404, Array.Empty<byte>(), "text/plain", new[]
+                    {
+                        ("Retry-After", "2"), ("X-Image", "pending"),
+                    });
+                    return;
+                default:
+                    await ctx.Send(404, Array.Empty<byte>(), "text/plain", new[] { ("X-Image", "missing") });
+                    return;
             }
-            await ctx.Send(200, got.Bytes, "image/png", new[]
-            {
-                ("Cache-Control", "public, max-age=31536000, immutable"),
-                ("X-Cache", got.FromCache ? "hit" : "miss"),
-            });
         });
 
         app.MapGet("/setup", async ctx =>
-            await ctx.Text(200, SetupPage.Html, "text/html; charset=utf-8"));
+            await ctx.Html(200, SetupPage.Html));
 
         async Task Ca(HttpContext ctx)
         {
@@ -118,7 +132,15 @@ public static class Endpoints
         });
 
         app.MapGet("/api/decks", async ctx =>
-            await ctx.Json(200, new { decks = decks.List(ctx.UserId()) }));
+        {
+            if (Paged(ctx) is { } cursor)
+            {
+                var page = decks.ListPage(ctx.UserId(), Keyset.Limit(ctx.Request.Query["limit"]), cursor);
+                await ctx.Json(200, new { items = page.Items, next_cursor = page.NextCursor });
+                return;
+            }
+            await ctx.Json(200, new { decks = decks.List(ctx.UserId()) });
+        });
 
         app.MapGet("/api/decks/{id:long}", async (HttpContext ctx, long id) =>
         {
@@ -130,6 +152,14 @@ public static class Endpoints
         app.MapGet("/api/search", async ctx =>
         {
             var q = ctx.Request.Query;
+            if (Paged(ctx) is { } cursor)
+            {
+                var page = cards.SearchPage(ctx.UserId(), Filter(q), Blank(q["sort"].FirstOrDefault()),
+                                            Keyset.Limit(q["limit"]), cursor);
+                await ctx.Json(200, new { items = page.Items, next_cursor = page.NextCursor });
+                return;
+            }
+
             var results = cards.Search(
                 ctx.UserId(),
                 q["q"].FirstOrDefault() ?? "",
@@ -144,13 +174,26 @@ public static class Endpoints
 
         app.MapGet("/api/facets", async ctx => await ctx.Json(200, cards.Facets()));
 
-        app.MapGet("/api/collection", async ctx => await ctx.Json(200, new
+        app.MapGet("/api/collection", async ctx =>
         {
-            cards = cards.Collection(ctx.UserId()),
-            stats = cards.Stats(ctx.UserId()),
-        }));
+            var q = ctx.Request.Query;
+            if (Paged(ctx) is { } cursor)
+            {
+                var page = cards.CollectionPage(ctx.UserId(), Filter(q), Blank(q["sort"].FirstOrDefault()),
+                                                Keyset.Limit(q["limit"]), cursor);
+                await ctx.Json(200, new { items = page.Items, next_cursor = page.NextCursor });
+                return;
+            }
+            await ctx.Json(200, new
+            {
+                cards = cards.Collection(ctx.UserId()),
+                stats = cards.Stats(ctx.UserId()),
+            });
+        });
 
         app.MapGet("/api/stats", async ctx => await ctx.Json(200, cards.Stats(ctx.UserId())));
+        app.MapGet("/api/collection/stats", async ctx =>
+            await ctx.Json(200, cards.Stats(ctx.UserId())));
 
         // Told to a stranger as readily as to an account, because the sign-in page
         // needs it before there is anyone to be: it is what decides whether the
@@ -192,7 +235,8 @@ public static class Endpoints
         app.MapGet("/api/health/ready", async ctx =>
         {
             var (status, body) = await HealthChecks.Ready(config, database,
-                                                          ctx.RequestAborted);
+                app.Services.GetService<StackExchange.Redis.IConnectionMultiplexer>(),
+                ctx.RequestAborted);
             await ctx.Json(status, body);
         });
 
@@ -222,8 +266,8 @@ public static class Endpoints
     {
         var cards = app.Services.GetRequiredService<CardRepository>();
         var decks = app.Services.GetRequiredService<DeckRepository>();
-        var tesseract = app.Services.GetRequiredService<TesseractScanner>();
-        var api = app.Services.GetRequiredService<ApiScanner>();
+        var scans = app.Services.GetRequiredService<ScanService>();
+        var queue = app.Services.GetRequiredService<JobQueue>();
         var config = app.Services.GetRequiredService<AppConfig>();
         var users = app.Services.GetRequiredService<UserRepository>();
         var access = app.Services.GetRequiredService<AccessRepository>();
@@ -349,72 +393,45 @@ public static class Endpoints
         app.MapPost("/api/scan", async ctx =>
         {
             var body = await Body<ScanPost>(ctx);
-            var variants = body.Variants ?? new List<string>();
-            var img = body.Image;
-
-            if (variants.Count == 0 && string.IsNullOrEmpty(img))
+            if ((body.Variants ?? new()).Count == 0 && string.IsNullOrEmpty(body.Image))
             {
                 await ctx.Json(400, new { error = "image required" });
                 return;
             }
 
-            // Local OCR first: free, offline, and usually faster.
-            if (variants.Count > 0 && tesseract.Available)
+            if (!config.ScansAsync)
             {
-                var (cid, note) = tesseract.Read(variants);
-                if (cid is null && config.Verbose)
-                    // Only on request, and only if what arrived really is a PNG -
-                    // this writes caller-supplied bytes to disk.
-                    tesseract.DumpFailedScan(variants);
-
-                if (cid is not null)
-                {
-                    cards.LogScan(ctx.UserId(), cid, "tesseract");
-                    var card = cards.Resolve(cid);
-                    await ctx.Json(200, new ScanResponse
-                    {
-                        Ok = true,
-                        CardId = cid,
-                        Card = card,
-                        InCatalog = card is not null,
-                        Engine = "tesseract",
-                        Confidence = card is not null ? "high" : "low",
-                        Note = note,
-                    });
-                    return;
-                }
-                if (AppConfig.ApiKey is null)
-                {
-                    await ctx.Json(200, new ScanResponse
-                    {
-                        Ok = false,
-                        Error = "no_read",
-                        Engine = "tesseract",
-                        Message = note,
-                    });
-                    return;
-                }
-            }
-
-            if (!string.IsNullOrEmpty(img))
-            {
-                var head = img.Length > 64 ? img[..64] : img;
-                if (head.Contains(','))
-                    img = img[(img.IndexOf(',') + 1)..];
-
-                var result = await api.Read(ctx.UserId(), img, body.MediaType ?? "image/jpeg");
-                result.Engine = "api";
-                await ctx.Json(200, result);
+                await ctx.Json(200, await scans.Read(ctx.UserId(), body));
                 return;
             }
 
-            await ctx.Json(200, new ScanResponse
+            // Two attempts: one retry covers a worker that died mid-read, and a
+            // photo that could not be read twice will not be read a third time.
+            var id = queue.Enqueue(JobTypes.RunOcrScan, body, correlationId: ctx.TraceIdentifier,
+                                   userId: ctx.UserId(), maxAttempts: 2, priority: JobPriority.Scan);
+            await ctx.Json(202, new { scan_id = id, status = "pending" });
+        });
+
+        app.MapGet("/api/scan/{id:long}", async (HttpContext ctx, long id) =>
+        {
+            // Someone else's scan is reported the same as no scan at all.
+            var job = queue.Get(id);
+            if (job is null || job.Type != JobTypes.RunOcrScan || job.UserId != ctx.UserId())
             {
-                Ok = false,
-                Error = "no_engine",
-                Message = "Scanning needs tesseract installed on this machine. "
-                          + "See the README, or type the number instead.",
-            });
+                await ctx.Json(404, new { error = "not found" });
+                return;
+            }
+            object reply = job.Status switch
+            {
+                "done" => new
+                {
+                    status = "complete",
+                    result = JsonSerializer.Deserialize<JsonElement>(job.Result ?? "{}"),
+                },
+                "failed" => new { status = "failed", error = "That scan could not be read." },
+                _ => new { status = "pending" },
+            };
+            await ctx.Json(200, reply);
         });
 
         app.MapPost("/api/reset", async ctx =>
@@ -432,10 +449,11 @@ public static class Endpoints
     static void MapAuth(WebApplication app, UserRepository users, AccessRepository access,
                         AppConfig config)
     {
+        var throttle = app.Services.GetRequiredService<ILoginThrottle>();
         app.MapPost("/api/auth/login", async ctx =>
         {
             var who = ctx.ClientIp(config.BehindProxy);
-            if (LoginThrottle.RetryAfter(who) is { } wait)
+            if (await throttle.RetryAfter(who) is { } wait)
             {
                 ctx.Response.Headers["Retry-After"] = wait.ToString();
                 await ctx.Json(429, new
@@ -449,14 +467,14 @@ public static class Endpoints
             var user = users.Authenticate(body.Username, body.Password);
             if (user is null)
             {
-                LoginThrottle.Failed(who);
+                await throttle.Failed(who);
                 // One message for both halves: saying which was wrong tells an
                 // attacker which usernames exist.
                 await ctx.Json(401, new { error = "That username and password do not match." });
                 return;
             }
 
-            LoginThrottle.Succeeded(who);
+            await throttle.Succeeded(who);
             ctx.SetSessionCookie(users.StartSession(user.Id));
             await ctx.Json(200, new
             {
@@ -474,7 +492,7 @@ public static class Endpoints
         app.MapPost("/api/auth/register", async ctx =>
         {
             var who = ctx.ClientIp(config.BehindProxy);
-            if (LoginThrottle.RetryAfter(who) is { } wait)
+            if (await throttle.RetryAfter(who) is { } wait)
             {
                 ctx.Response.Headers["Retry-After"] = wait.ToString();
                 await ctx.Json(429, new
@@ -494,7 +512,7 @@ public static class Endpoints
             {
                 // A wrong invite counts against the same allowance as a wrong
                 // password, so neither can be guessed any faster than the other.
-                LoginThrottle.Failed(who);
+                await throttle.Failed(who);
                 await ctx.Json(403, new { error = WhyNot(offered) });
                 return;
             }
@@ -539,7 +557,7 @@ public static class Endpoints
                 var user = users.Create(username, password, invite?.Email);
                 if (invite is not null) access.Attach(invite.Id, user.Id);
 
-                LoginThrottle.Succeeded(who);
+                await throttle.Succeeded(who);
                 ctx.SetSessionCookie(users.StartSession(user.Id));
                 await ctx.Json(200, new
                 {
@@ -609,6 +627,31 @@ public static class Endpoints
             System.Text.Encoding.UTF8.GetBytes(expected));
         return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(a, b);
     }
+
+    /// <summary>
+    /// The cursor when the caller asked for the paged shape, which it does by sending
+    /// a cursor at all - empty for the first page. Callers that send none get the
+    /// old unpaged response, so a phone with yesterday's page cached keeps working.
+    /// </summary>
+    static string? Paged(HttpContext ctx) =>
+        ctx.Request.Query.TryGetValue("cursor", out var c) ? c.ToString() : null;
+
+    /// <summary>
+    /// owned=1 is owned only and owned=0 not owned only; colors is a comma list any
+    /// one of which may match. Only read in the paged shape: the old one treated
+    /// owned=0 as "no filter", and still does.
+    /// </summary>
+    static CardFilter Filter(IQueryCollection q) => new()
+    {
+        Q = q["q"].FirstOrDefault(),
+        Category = Blank(q["category"].FirstOrDefault()),
+        ExcludeCategory = Blank(q["exclude_category"].FirstOrDefault()),
+        Colors = (q["colors"].FirstOrDefault() ?? q["color"].FirstOrDefault() ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+        Rarity = Blank(q["rarity"].FirstOrDefault()),
+        SetLabel = Blank(q["set"].FirstOrDefault()),
+        Owned = q["owned"].FirstOrDefault() switch { "1" => true, "0" => false, _ => null },
+    };
 
     static string? Blank(string? s) => string.IsNullOrEmpty(s) ? null : s;
 

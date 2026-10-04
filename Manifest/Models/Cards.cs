@@ -138,3 +138,29 @@ public sealed class BulkLogResult
     public int Unique { get; set; }
     public List<AdjustResult> Cards { get; set; } = new();
 }
+
+/// <summary>
+/// What a paged card list is narrowed by. Every field is optional; the same filter
+/// serves catalogue search and the owned-cards list, so the two tabs cannot drift
+/// apart in what "Red" or "Leader" means.
+/// </summary>
+public sealed record CardFilter
+{
+    public string? Q { get; init; }
+    public string? Category { get; init; }
+
+    /// <summary>
+    /// Matches a card that has any one of these. A dual-colour Leader's deck takes
+    /// cards sharing either colour, which a single colour parameter cannot say.
+    /// </summary>
+    public IReadOnlyList<string> Colors { get; init; } = Array.Empty<string>();
+
+    public string? Rarity { get; init; }
+    public string? SetLabel { get; init; }
+
+    /// <summary>true: owned only. false: not owned only. null: either.</summary>
+    public bool? Owned { get; init; }
+
+    /// <summary>Leave out one card type - the deck editor never offers Leaders.</summary>
+    public string? ExcludeCategory { get; init; }
+}

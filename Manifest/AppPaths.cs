@@ -10,7 +10,6 @@ public sealed class AppPaths
     public string Root { get; }
     public string DbPath => Path.Combine(Root, "manifest.db");
     public string Catalog => Path.Combine(Root, "catalog.json");
-    public string Ui => Path.Combine(Root, "ui.html");
     public string CaPem => Path.Combine(Root, "ca.pem");
     public string CertPem => Path.Combine(Root, "cert.pem");
     public string KeyPem => Path.Combine(Root, "key.pem");
@@ -34,8 +33,7 @@ public sealed class AppPaths
             var dir = new DirectoryInfo(start);
             while (dir is not null)
             {
-                if (File.Exists(Path.Combine(dir.FullName, "ui.html")) ||
-                    File.Exists(Path.Combine(dir.FullName, "catalog.json")))
+                if (File.Exists(Path.Combine(dir.FullName, "catalog.json")))
                     return dir.FullName;
                 dir = dir.Parent;
             }

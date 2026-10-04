@@ -8,6 +8,10 @@ public interface ICardRepository
     List<SearchRow> Search(long userId, string? q, string? limit, bool ownedOnly,
                            string? category, string? color, string? rarity,
                            string? setLabel);
+    Page<SearchRow> SearchPage(long userId, CardFilter filter, string? sort, int limit,
+                               string? cursor);
+    Page<CollectionRow> CollectionPage(long userId, CardFilter filter, string? sort,
+                                       int limit, string? cursor);
     Facets Facets();
     List<CollectionRow> Collection(long userId);
     CardDetailRow? CardDetail(long userId, string rawCardId);
@@ -58,6 +62,7 @@ public interface IAccessRepository
 public interface IDeckRepository
 {
     List<DeckListItem> List(long userId);
+    Page<DeckListItem> ListPage(long userId, int limit, string? cursor);
     DeckDetail? Detail(long userId, long deckId);
     DeckDetail Create(long userId, string? name, string leaderCardId);
     DeckDetail? Update(long userId, long deckId, string? name, string? leaderCardId);

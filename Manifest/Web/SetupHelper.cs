@@ -27,13 +27,12 @@ public static class SetupHelper
 
         app.Use(async (ctx, next) =>
         {
-            foreach (var (k, v) in AppConfig.SecurityHeaders)
-                ctx.Response.Headers[k] = v;
+            SecurityHeaders.Apply(ctx);
             await next();
         });
 
         async Task Setup(HttpContext ctx) =>
-            await ctx.Text(200, SetupPage.For(appUrl), "text/html; charset=utf-8");
+            await ctx.Html(200, SetupPage.For(appUrl));
 
         app.MapGet("/", Setup);
         app.MapGet("/setup", Setup);

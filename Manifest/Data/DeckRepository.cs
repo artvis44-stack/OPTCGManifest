@@ -15,43 +15,49 @@ public sealed class DeckRepository : IDeckRepository
     /// but simply absent - the caller gets the same 404 as for an id that never
     /// existed, which is also what stops deck ids being probed for who owns what.
     /// </summary>
-    public List<DeckListItem> List(long userId)
+    /// <summary>Most recently edited first; id breaks ties between edits in one instant.</summary>
+    static readonly Keyset DeckOrder = new("updated",
+        new Keyset.Key("d.updated_at", true, Keyset.Kind.Time),
+        new Keyset.Key("d.id", true, Keyset.Kind.Number));
+
+    public List<DeckListItem> List(long userId) => ListPage(userId, 10_000, null).Items;
+
+    public Page<DeckListItem> ListPage(long userId, int limit, string? cursor)
     {
         using var conn = _db.Open();
-        var decks = new List<(long Id, string Name, string? Created, string? Updated, string LeaderId)>();
+        Page<(long Id, string Name, string? Created, string? Updated, string LeaderId, int Total)> rows;
 
         using (var cmd = conn.CreateCommand())
         {
-            cmd.CommandText =
-                "SELECT * FROM decks WHERE user_id = @user ORDER BY updated_at DESC";
             cmd.Bind("@user", userId);
-            using var r = cmd.ExecuteReader();
-            while (r.Read())
-                decks.Add((r.Long("id"), r.Text("name"), r.Str("created_at"),
-                           r.Str("updated_at"), r.Text("leader_card_id")));
+            var after = DeckOrder.After(cursor, cmd, _db.Dialect);
+            cmd.CommandText = $"""
+                SELECT d.id, d.name, d.created_at, d.updated_at, d.leader_card_id,
+                       (SELECT COALESCE(SUM(qty), 0) FROM deck_cards dc
+                         WHERE dc.deck_id = d.id) AS card_count,
+                       {DeckOrder.SelectColumns}
+                FROM decks d
+                WHERE d.user_id = @user{(after is null ? "" : " AND " + after)}
+                ORDER BY {DeckOrder.OrderBy}
+                LIMIT @limit
+                """;
+            cmd.Bind("@limit", limit + 1);
+            rows = DeckOrder.Read(cmd, limit, r => (r.Long("id"), r.Text("name"), r.Str("created_at"),
+                                                   r.Str("updated_at"), r.Text("leader_card_id"),
+                                                   r.IntOr("card_count")));
         }
 
-        var out_ = new List<DeckListItem>();
-        foreach (var d in decks)
+        var items = rows.Items.Select(d => new DeckListItem
         {
-            var leader = CardRepository.CatalogRowById(conn, d.LeaderId);
-            using var count = conn.CreateCommand();
-            count.CommandText = "SELECT COALESCE(SUM(qty),0) n FROM deck_cards WHERE deck_id = @id";
-            count.Bind("@id", d.Id);
-            var total = Convert.ToInt32(count.ExecuteScalar());
-
-            out_.Add(new DeckListItem
-            {
-                Id = d.Id,
-                Name = d.Name,
-                CreatedAt = d.Created,
-                UpdatedAt = d.Updated,
-                Leader = DeckAnalysis.Summarise(leader),
-                CardCount = total,
-                SizeOk = total == AppConfig.DeckSize,
-            });
-        }
-        return out_;
+            Id = d.Id,
+            Name = d.Name,
+            CreatedAt = d.Created,
+            UpdatedAt = d.Updated,
+            Leader = DeckAnalysis.Summarise(CardRepository.CatalogRowById(conn, d.LeaderId)),
+            CardCount = d.Total,
+            SizeOk = d.Total == AppConfig.DeckSize,
+        }).ToList();
+        return new Page<DeckListItem>(items, rows.NextCursor);
     }
 
     public DeckDetail? Detail(long userId, long deckId)

@@ -34,19 +34,34 @@ public sealed class AppConfig
     public HashSet<string> AllowedHosts { get; } =
         new(StringComparer.OrdinalIgnoreCase) { "localhost", "127.0.0.1", "::1" };
 
-    /// <summary>
-    /// Headers on every response. A full Content-Security-Policy is not here on
-    /// purpose: ui.html is one file of inline script and inline onerror= handlers, so
-    /// a strict policy needs a build step to extract them first. frame-ancestors is
-    /// the part that works today without one.
-    /// </summary>
+    /// <summary>Headers on every response, beside the Content-Security-Policy.</summary>
     public static readonly (string Key, string Value)[] SecurityHeaders =
     {
         ("X-Content-Type-Options", "nosniff"),
         ("Referrer-Policy", "same-origin"),
-        ("Content-Security-Policy", "frame-ancestors 'none'"),
         ("X-Frame-Options", "DENY"),
     };
+
+    /// <summary>
+    /// Scripts and styles only from this origin, plus - for the few pages the server
+    /// writes itself, with their script inline - the ones carrying this response's
+    /// nonce, which an injected tag cannot know. No inline event handlers and no
+    /// style="" attributes anywhere; images from here and from data:/blob: URLs the
+    /// scanner makes; nothing may frame the app.
+    /// </summary>
+    public static string ContentSecurityPolicy(string nonce) =>
+        "default-src 'none'; "
+        + $"script-src 'self' 'nonce-{nonce}'; "
+        + $"style-src 'self' 'nonce-{nonce}'; "
+        + "img-src 'self' data: blob:; "
+        + "connect-src 'self'; "
+        + "media-src 'self' blob:; "
+        + "font-src 'self'; "
+        + "manifest-src 'self'; "
+        + "form-action 'self'; "
+        + "base-uri 'none'; "
+        + "object-src 'none'; "
+        + "frame-ancestors 'none'";
 
     /// <summary>
     /// Set when something else terminates TLS in front of this - Caddy, nginx, a
@@ -89,8 +104,55 @@ public sealed class AppConfig
     public string? ObjectStorageSecretKey { get; init; } =
         Env("MANIFEST_OBJECT_STORAGE_SECRET_KEY") ?? Env("AWS_SECRET_ACCESS_KEY");
 
+    /// <summary>
+    /// Who runs background jobs. inline: this web process, the single-machine
+    /// default. external: separate `manifest worker` processes, so the site only
+    /// queues work ("postgres" is accepted as an older name for it). disabled:
+    /// nobody, and queued work waits.
+    /// </summary>
     public string WorkerMode { get; init; } =
-        Env("MANIFEST_WORKER_MODE") ?? "inline";
+        (Env("MANIFEST_WORKER_MODE") ?? "inline").Trim().ToLowerInvariant() switch
+        {
+            "postgres" => "external",
+            var m => m,
+        };
+
+    public bool RunsJobsInline => WorkerMode == "inline";
+
+    /// <summary>
+    /// Jobs one worker process runs at once. Most are waits on another server - the
+    /// card site, SMTP - so four keeps a screenful of new card art arriving about as
+    /// fast as fetching it inside each request used to.
+    /// </summary>
+    public int WorkerConcurrency { get; init; } =
+        int.TryParse(Env("MANIFEST_WORKER_CONCURRENCY"), out var n) && n > 0 ? Math.Min(n, 32) : 4;
+
+    public TimeSpan? RefreshPricesEvery { get; init; } = Hours("MANIFEST_REFRESH_PRICES_HOURS");
+    public TimeSpan? RefreshCatalogEvery { get; init; } = Hours("MANIFEST_REFRESH_CATALOG_HOURS");
+
+    /// <summary>
+    /// sync: a scan is read inside the request, as it always was. async: the request
+    /// queues it and the page polls for the answer, so a slow OCR run never ties up
+    /// a web worker. Async by default in Production, sync otherwise.
+    /// </summary>
+    public string ScanMode { get; init; } = (Env("MANIFEST_SCAN_MODE") ?? "").Trim().ToLowerInvariant();
+
+    public bool ScansAsync => ScanMode switch
+    {
+        "async" => true,
+        "sync" => false,
+        _ => IsProduction,
+    };
+
+    public string ObjectStorageRegion { get; init; } =
+        Env("MANIFEST_OBJECT_STORAGE_REGION") ?? Env("AWS_REGION") ?? "us-east-1";
+
+    /// <summary>
+    /// bucket.host/key or host/bucket/key. Path style is what MinIO and most
+    /// self-hosted stores want, so it is the default; AWS itself prefers virtual.
+    /// </summary>
+    public bool ObjectStoragePathStyle { get; init; } =
+        !string.Equals(Env("MANIFEST_OBJECT_STORAGE_PATH_STYLE"), "false", StringComparison.OrdinalIgnoreCase);
 
     public bool ObjectStorageConfigured =>
         !string.IsNullOrWhiteSpace(ObjectStorageEndpoint)
@@ -170,9 +232,29 @@ public sealed class AppConfig
         if (Data.Database.RejectUrl(DatabaseUrl) is { } badUrl)
             errors.Add(badUrl);
 
-        var mode = WorkerMode.Trim().ToLowerInvariant();
-        if (mode is not ("inline" or "postgres" or "redis" or "disabled"))
-            errors.Add("MANIFEST_WORKER_MODE must be inline, postgres, redis, or disabled.");
+        if (RedisUrl is { } redis)
+        {
+            try { Web.RedisLoginThrottle.Options(redis); }
+            catch (Exception e) when (e is ArgumentException or FormatException
+                                         or UriFormatException or OverflowException)
+            {
+                errors.Add($"MANIFEST_REDIS_URL could not be read: {e.Message}");
+            }
+        }
+
+        if (WorkerMode is not ("inline" or "external" or "disabled"))
+            errors.Add("MANIFEST_WORKER_MODE must be inline, external or disabled.");
+
+        if (ScanMode is not ("" or "sync" or "async"))
+            errors.Add("MANIFEST_SCAN_MODE must be sync or async.");
+
+        if (ScansAsync && WorkerMode == "disabled")
+            errors.Add("Asynchronous scans need a worker: set MANIFEST_WORKER_MODE to inline or "
+                       + "external, or MANIFEST_SCAN_MODE=sync.");
+
+        foreach (var name in new[] { "MANIFEST_REFRESH_PRICES_HOURS", "MANIFEST_REFRESH_CATALOG_HOURS" })
+            if (Env(name) is { } raw && !(double.TryParse(raw, out var h) && h > 0))
+                errors.Add($"{name} must be a positive number of hours.");
 
         if (!IsProduction) return errors;
 
@@ -198,6 +280,9 @@ public sealed class AppConfig
 
         return errors;
     }
+
+    static TimeSpan? Hours(string name) =>
+        double.TryParse(Env(name), out var h) && h > 0 ? TimeSpan.FromHours(h) : null;
 
     static long ReadUploadLimitBytes()
     {

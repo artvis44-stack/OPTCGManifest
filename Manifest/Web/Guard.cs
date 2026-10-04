@@ -21,8 +21,7 @@ public sealed class Guard
 
     public async Task Invoke(HttpContext ctx)
     {
-        foreach (var (k, v) in AppConfig.SecurityHeaders)
-            ctx.Response.Headers[k] = v;
+        SecurityHeaders.Apply(ctx);
 
         if (!HostOk(ctx))
         {

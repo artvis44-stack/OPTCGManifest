@@ -12,6 +12,19 @@ public static class Responses
         await ctx.Send(code, bytes, "application/json");
     }
 
+    /// <summary>
+    /// A page the server writes itself. Its inline &lt;script&gt; and &lt;style&gt;
+    /// tags are given this response's CSP nonce on the way out, which is what lets
+    /// them run under a policy that refuses inline code from anywhere else.
+    /// </summary>
+    public static Task Html(this HttpContext ctx, int code, string html)
+    {
+        var nonce = SecurityHeaders.Nonce(ctx);
+        return ctx.Text(code, html.Replace("<script>", $"<script nonce=\"{nonce}\">")
+                                  .Replace("<style>", $"<style nonce=\"{nonce}\">"),
+                        "text/html; charset=utf-8");
+    }
+
     public static Task Text(this HttpContext ctx, int code, string body, string contentType) =>
         ctx.Send(code, Encoding.UTF8.GetBytes(body), contentType);
 

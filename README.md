@@ -136,14 +136,17 @@ address, set it to Enabled and relaunch Chrome.
 
 ## Card art
 
-Card pictures are fetched by the server and cached in `img-cache/`, then served
-from your own machine. They are not hotlinked: the official card site sends a
-`Cross-Origin-Resource-Policy` header that makes browsers refuse to render its
-images inside another page.
+Card pictures are fetched by the server and kept in `img-cache/` (or a bucket -
+see below), then served from your own machine. They are not hotlinked: the
+official card site sends a `Cross-Origin-Resource-Policy` header that makes
+browsers refuse to render its images inside another page.
 
-The first time you view a set the pictures are pulled one by one, so it fills in
-gradually. After that they load from disk instantly and work offline. Delete
-`img-cache/` to reclaim the space; it will refill on demand.
+The first time you view a set the pictures are fetched in the background, so it
+fills in over a few seconds; the page asks again for each one until it arrives.
+After that they load from disk instantly and work offline. Delete `img-cache/` to
+reclaim the space; it will refill on demand. A picture the card site fails to send
+is not asked for again straight away, but after a minute, then two, doubling to a
+day.
 
 If a picture never appears, the machine running the server could not reach
 `en.onepiece-cardgame.com`. Everything else keeps working — art is decoration,
@@ -257,6 +260,59 @@ transaction that checks its counts before committing, and it refuses a target th
 already has accounts or collections in it. If the file holds rows from before
 accounts existed and also has accounts, it asks whose they are: `--owner <name>`.
 
+### More than one app container: Redis
+
+Sessions live in the database, so any container can serve any signed-in user. The
+sign-in throttle (8 wrong passwords or invite codes from one address in 15 minutes,
+then a 15-minute wait) is kept in memory unless Redis is configured, and memory is
+per process: behind a load balancer, three containers would allow three times the
+guesses. Point them all at one Redis and they share one count:
+
+```
+MANIFEST_REDIS_URL=redis://:password@redis-host:6379   # rediss:// for TLS
+```
+
+If Redis goes away, sign-ins keep working without the throttle rather than being
+refused, each miss is logged as an error, and `/api/health/ready` reports Redis as
+failing.
+
+### Background jobs and the worker
+
+Fetching card art, sending mail, reading scans, refreshing prices and the
+housekeeping (expired sessions, links and old jobs) all run as jobs from a queue in
+the database. By default the server runs them itself (`MANIFEST_WORKER_MODE=inline`).
+To run them separately, so the site never waits on them and they can be restarted
+on their own:
+
+```
+MANIFEST_WORKER_MODE=external dotnet run --project Manifest          # the site
+MANIFEST_WORKER_MODE=external dotnet run --project Manifest -- worker  # the jobs
+```
+
+Run as many workers as you like against one database; they share the queue, and a
+job whose worker dies is picked up by another after five minutes. Urgent work goes
+first - a scan someone is waiting on, then mail, then card art, then housekeeping -
+and one slot in every worker is kept for the urgent kinds. With
+`MANIFEST_SCAN_MODE=async` (the Production default) the phone sends a scan and
+waits for the worker's answer instead of holding the request open.
+
+`MANIFEST_REFRESH_PRICES_HOURS=24` refreshes prices daily; `manifest enqueue
+refresh-prices` (or `refresh-catalog`, or `purge`) queues one now.
+
+### Card art in object storage
+
+With several containers, keep the pictures in an S3-compatible bucket - AWS,
+Cloudflare R2, Backblaze B2, MinIO, SeaweedFS - instead of each container's disk:
+
+```
+MANIFEST_OBJECT_STORAGE_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+MANIFEST_OBJECT_STORAGE_BUCKET=manifest-art
+MANIFEST_OBJECT_STORAGE_ACCESS_KEY=...
+MANIFEST_OBJECT_STORAGE_SECRET_KEY=...
+```
+
+Pictures are stored as `cards/<card-id>.png` and still served through the app.
+
 ## Tests
 
 ```
@@ -273,7 +329,13 @@ MANIFEST_TEST_POSTGRES=postgres://manifest:manifest@127.0.0.1:55432/manifest \
   dotnet test Manifest.Tests
 ```
 
-85 tests. Most boot a real server on a scratch database and drive it over HTTP:
+Likewise `MANIFEST_TEST_REDIS=redis://127.0.0.1:6379` runs the throttle tests
+against Redis, including two servers sharing one allowance, and
+`MANIFEST_TEST_S3=http://127.0.0.1:8333` the object-storage tests against an
+S3-compatible server (any with a `test`/`test` key pair). All three can be set
+together.
+
+Most tests boot a real server on a scratch database and drive it over HTTP:
 catalogue seeding, lookup by number and name, alt-art separation, logging and
 clamping, 40 simultaneous writes landing correctly, stats, CSV export, deck
 building and its legality rules, error handling, survival across a restart,
@@ -289,7 +351,7 @@ if OpenSSL is missing. Cleans up after itself.
 | | |
 |---|---|
 | `Manifest/` | the server: HTTP, SQLite/PostgreSQL, API, scraper and price jobs |
-| `ui.html` | the interface |
+| `Manifest/wwwroot/` | the interface: page, stylesheet and scripts, built into the binary |
 | `catalog.json` | card data, seeded into the database on first run |
 | `make_cert.sh` | certificate authority and server certificate for the camera |
 | `ca.pem`, `cert.pem`, `key.pem` | created by `make_cert.sh`; keep the keys private |

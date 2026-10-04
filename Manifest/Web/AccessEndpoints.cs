@@ -1,6 +1,7 @@
 using Manifest.Data;
 using Manifest.Models;
 using Manifest.Services;
+using Manifest.Services.Jobs;
 
 namespace Manifest.Web;
 
@@ -31,19 +32,21 @@ public static class AccessEndpoints
         var access = app.Services.GetRequiredService<AccessRepository>();
         var users = app.Services.GetRequiredService<UserRepository>();
         var mailer = app.Services.GetRequiredService<Mailer>();
+        var outbox = app.Services.GetRequiredService<Outbox>();
         var config = app.Services.GetRequiredService<AppConfig>();
         var clock = app.Services.GetRequiredService<IClock>();
 
-        MapPublic(app, access, mailer, config, clock);
-        MapOwner(app, access, mailer, clock);
+        MapPublic(app, access, outbox, config, clock);
+        MapOwner(app, access, mailer, outbox, clock);
         MapPages(app, access, users);
     }
 
     // ---- what a stranger can reach
 
-    static void MapPublic(WebApplication app, AccessRepository access, Mailer mailer,
+    static void MapPublic(WebApplication app, AccessRepository access, Outbox outbox,
                           AppConfig config, IClock clock)
     {
+        var throttle = app.Services.GetRequiredService<ILoginThrottle>();
         app.MapPost("/api/access/request", async ctx =>
         {
             if (!AppConfig.RequestAccessOpen)
@@ -59,7 +62,7 @@ public static class AccessEndpoints
             // address. Filing a request costs the server an outgoing email, so it is
             // worth at least as much rate limiting as a sign-in attempt.
             var who = "access:" + ctx.ClientIp(config.BehindProxy);
-            if (LoginThrottle.RetryAfter(who) is { } wait)
+            if (await throttle.RetryAfter(who) is { } wait)
             {
                 ctx.Response.Headers["Retry-After"] = wait.ToString();
                 await ctx.Json(429, new { error = $"Too many requests. Try again in {Minutes(wait)}." });
@@ -69,16 +72,16 @@ public static class AccessEndpoints
             var body = await Read<AccessRequestPost>(ctx);
             if (AccessRepository.RejectEmail(body.Email) is { } bad)
             {
-                LoginThrottle.Failed(who);
+                await throttle.Failed(who);
                 await ctx.Json(400, new { error = bad });
                 return;
             }
 
-            LoginThrottle.Failed(who);
+            await throttle.Failed(who);
 
             var submission = access.Submit(body.Email!, body.Note,
                                            ctx.ClientIp(config.BehindProxy));
-            await Announce(submission, mailer, BaseUrl(ctx));
+            await Announce(submission, outbox, BaseUrl(ctx), ctx.TraceIdentifier);
 
             await ctx.Json(200, new { ok = true, message = Acknowledgement });
         });
@@ -120,8 +123,8 @@ public static class AccessEndpoints
             }
 
             var outcome = approving
-                ? await ApproveAndMail(access, mailer, found.Id, "email link",
-                                       BaseUrl(ctx), clock)
+                ? await ApproveAndMail(access, outbox, found.Id, "email link",
+                                       BaseUrl(ctx), clock, ctx.TraceIdentifier)
                 : Denied(access.Deny(found.Id, "email link"), clock);
 
             await ctx.Json(outcome.Ok ? 200 : 409, outcome.Payload);
@@ -148,7 +151,7 @@ public static class AccessEndpoints
 
     // ---- what the owner can reach, signed in
 
-    static void MapOwner(WebApplication app, AccessRepository access, Mailer mailer,
+    static void MapOwner(WebApplication app, AccessRepository access, Mailer mailer, Outbox outbox,
                          IClock clock)
     {
         app.MapGet("/api/access/requests", async ctx =>
@@ -173,8 +176,8 @@ public static class AccessEndpoints
         app.MapPost("/api/access/requests/{id:long}/approve", async (HttpContext ctx, long id) =>
         {
             if (!IsOwner(ctx)) { await Forbid(ctx); return; }
-            var outcome = await ApproveAndMail(access, mailer, id, ctx.User()!.Username,
-                                               BaseUrl(ctx), clock);
+            var outcome = await ApproveAndMail(access, outbox, id, ctx.User()!.Username,
+                                               BaseUrl(ctx), clock, ctx.TraceIdentifier);
             await ctx.Json(outcome.Ok ? 200 : 409, outcome.Payload);
         });
 
@@ -194,10 +197,10 @@ public static class AccessEndpoints
         // mode rather than a page of its own, so there is one place where a username
         // and a password are typed and one place to get that right.
         app.MapGet("/register", async ctx =>
-            await ctx.Text(200, LoginPage.Html, "text/html; charset=utf-8"));
+            await ctx.Html(200, LoginPage.Html));
 
         app.MapGet("/access/review", async ctx =>
-            await ctx.Text(200, AccessPages.Review, "text/html; charset=utf-8"));
+            await ctx.Html(200, AccessPages.Review));
 
         app.MapGet("/admin", async ctx =>
         {
@@ -206,15 +209,15 @@ public static class AccessEndpoints
             // than a JSON error.
             if (ctx.User() is null)
             {
-                await ctx.Text(200, LoginPage.Html, "text/html; charset=utf-8");
+                await ctx.Html(200, LoginPage.Html);
                 return;
             }
             if (!IsOwner(ctx))
             {
-                await ctx.Text(403, AccessPages.NotYours, "text/html; charset=utf-8");
+                await ctx.Html(403, AccessPages.NotYours);
                 return;
             }
-            await ctx.Text(200, AccessPages.Admin, "text/html; charset=utf-8");
+            await ctx.Html(200, AccessPages.Admin);
         });
     }
 
@@ -227,9 +230,9 @@ public static class AccessEndpoints
     /// in the admin's mail and the button on the admin page - land here, so there is
     /// one description of what approving means.
     /// </summary>
-    static async Task<Acted> ApproveAndMail(AccessRepository access, Mailer mailer,
+    static async Task<Acted> ApproveAndMail(AccessRepository access, Outbox outbox,
                                               long id, string decidedBy, string baseUrl,
-                                              IClock clock)
+                                              IClock clock, string? correlationId)
     {
         var approved = access.Approve(id, decidedBy);
         if (approved is not ({ } request, { } token))
@@ -240,7 +243,7 @@ public static class AccessEndpoints
             });
 
         var mail = AccessMail.ForApplicant(request, baseUrl, token);
-        var sent = await mailer.Send(request.Email, mail.Subject, mail.Text, mail.Html);
+        var sent = await outbox.Send(request.Email, mail.Subject, mail.Text, mail.Html, correlationId);
 
         // The approval stands even if the mail bounced: the row is the decision, the
         // mail is only how it travels. The admin page says which happened so a failed
@@ -250,7 +253,7 @@ public static class AccessEndpoints
             ok = true,
             decision = "approved",
             email = request.Email,
-            mail = sent.ToString().ToLowerInvariant(),
+            mail = sent,
             request = AccessRequestView.Of(request, clock),
         });
     }
@@ -281,8 +284,8 @@ public static class AccessEndpoints
     /// still live and who has asked again - which nearly always means the first mail
     /// went to spam.
     /// </summary>
-    static async Task Announce(AccessRepository.Submission submission, Mailer mailer,
-                               string baseUrl)
+    static async Task Announce(AccessRepository.Submission submission, Outbox outbox,
+                               string baseUrl, string? correlationId)
     {
         switch (submission)
         {
@@ -292,14 +295,14 @@ public static class AccessEndpoints
                 var to = AppConfig.AdminEmail;
                 if (to is null) return;
                 var mail = AccessMail.ForAdmin(request, baseUrl, token);
-                await mailer.Send(to, mail.Subject, mail.Text, mail.Html);
+                await outbox.Send(to, mail.Subject, mail.Text, mail.Html, correlationId);
                 return;
             }
             case { Outcome: AccessRepository.Outcome.InviteResent, Request: { } request,
                    InviteToken: { } token }:
             {
                 var mail = AccessMail.ForApplicant(request, baseUrl, token);
-                await mailer.Send(request.Email, mail.Subject, mail.Text, mail.Html);
+                await outbox.Send(request.Email, mail.Subject, mail.Text, mail.Html, correlationId);
                 return;
             }
         }

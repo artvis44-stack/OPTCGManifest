@@ -37,6 +37,9 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
 
     public TimeSpan SessionLifetime => SessionLife;
 
+    /// <summary>How often a session in use has its expiry pushed back.</summary>
+    static readonly TimeSpan TouchEvery = TimeSpan.FromMinutes(1);
+
     /// <summary>
     /// A hash of nothing in particular, used to spend the same time verifying a
     /// password for a username that does not exist as for one that does. Without it
@@ -292,18 +295,27 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
         var now = _clock.UtcNow;
         using var conn = _db.Open();
         long userId;
+        string? lastSeen;
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = """
-                SELECT user_id FROM sessions
+                SELECT user_id, last_seen FROM sessions
                 WHERE token_hash = @t AND expires_at > @now
                 """;
             cmd.Bind("@t", Digest(token));
             cmd.Bind("@now", Stamp(now));
-            var found = cmd.ExecuteScalar();
-            if (found is null or DBNull) return null;
-            userId = Convert.ToInt64(found);
+            using var r = cmd.ExecuteReader();
+            if (!r.Read()) return null;
+            userId = r.Long("user_id");
+            lastSeen = r.Str("last_seen");
         }
+
+        // Slid at most once a minute. This runs on every request - every thumbnail
+        // on a page of card art - and a write each time is a write lock each time,
+        // all to move an expiry thirty days away by a few seconds.
+        var stale = (now - TouchEvery).ToString(ReaderExtensions.StampFormat);
+        if (lastSeen is not null && string.CompareOrdinal(lastSeen, stale) > 0)
+            return ById(conn, userId);
 
         using (var touch = conn.CreateCommand())
         {

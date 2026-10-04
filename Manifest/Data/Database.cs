@@ -138,14 +138,19 @@ public sealed class Database
         var conn = new SqliteConnection(_connectionString);
         conn.Open();
         using var pragma = conn.CreateCommand();
+        // No busy_timeout: SQLite's own handler, in the build Microsoft.Data.Sqlite
+        // ships, sleeps in whole seconds, so every brief collision between two
+        // writers cost a full second and a page of card art stalled the app behind
+        // them. Without it, a locked statement comes straight back and the driver
+        // retries it in short steps, up to DefaultTimeout.
         pragma.CommandText = """
             PRAGMA journal_mode=WAL;
-            PRAGMA busy_timeout=15000;
             PRAGMA foreign_keys=ON;
             """;
         pragma.ExecuteNonQuery();
         return conn;
     }
+
 
     public const string Schema = """
         CREATE TABLE IF NOT EXISTS catalog (
@@ -252,6 +257,43 @@ public sealed class Database
             qty       INTEGER NOT NULL CHECK (qty > 0),
             PRIMARY KEY (deck_id, card_id)
         );
+
+        -- Work that happens outside a request: fetching card art, sending mail,
+        -- reading a scan. See JobQueue for the life cycle of a row.
+        CREATE TABLE IF NOT EXISTS jobs (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            type           TEXT NOT NULL,
+            payload        TEXT NOT NULL DEFAULT '{}',
+            status         TEXT NOT NULL DEFAULT 'queued',
+            attempts       INTEGER NOT NULL DEFAULT 0,
+            max_attempts   INTEGER NOT NULL DEFAULT 5,
+            priority       INTEGER NOT NULL DEFAULT 0,
+            run_after      TEXT NOT NULL DEFAULT (datetime('now')),
+            locked_until   TEXT,
+            dedupe_key     TEXT,
+            correlation_id TEXT,
+            user_id        INTEGER,
+            result         TEXT,
+            last_error     TEXT,
+            created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_dedupe ON jobs(dedupe_key)
+            WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running');
+
+        -- Where each card's picture is: fetched into the image store, waiting to
+        -- be, or failing - and when to try a failing one again.
+        CREATE TABLE IF NOT EXISTS card_images (
+            card_id         TEXT PRIMARY KEY,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            source_url      TEXT,
+            object_key      TEXT,
+            last_attempt_at TEXT,
+            next_attempt_at TEXT,
+            failure_count   INTEGER NOT NULL DEFAULT 0,
+            last_error      TEXT,
+            updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         """;
 
     /// <summary>
@@ -314,11 +356,16 @@ public sealed class Database
             Console.WriteLine("migrated: accounts can carry an email address");
         }
 
+        // Builds from before job priorities made the table without the column.
+        if (!HasColumn(conn, "jobs", "priority"))
+            Exec(conn, "ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0");
+
         // Indexes on the migrated columns go last, once every column they name is
         // certain to exist. Putting them in Schema alongside their tables looks
         // tidier and breaks every database that predates the column, because
         // CREATE TABLE IF NOT EXISTS skips but CREATE INDEX does not.
         Exec(conn, "CREATE INDEX IF NOT EXISTS idx_decks_user ON decks(user_id)");
+        Exec(conn, "CREATE INDEX IF NOT EXISTS idx_jobs_ready ON jobs(status, priority DESC, run_after)");
 
         // Partial, so the many accounts that predate the column - all NULL - do not
         // collide with each other, while two real accounts cannot share an address.

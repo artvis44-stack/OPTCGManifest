@@ -13,7 +13,7 @@ public static class Cli
           --behind-proxy     trust X-Forwarded-For/Proto, when Caddy or nginx is in front
           --https            serve TLS using cert.pem/key.pem (needed for the camera)
           --reseed           rebuild catalog from catalog.json
-          --root PATH        where catalog.json, ui.html and (with SQLite) manifest.db live
+          --root PATH        where catalog.json and (with SQLite) manifest.db live
           --verbose          log every request
           -h, --help         this text
 
@@ -23,6 +23,8 @@ public static class Cli
           refresh-catalog    rebuild catalog.json from the vegapull-records dataset
           refresh-prices     pull market prices into the database
           migrate-sqlite     copy a manifest.db into PostgreSQL, once
+          worker             run background jobs (with MANIFEST_WORKER_MODE=external)
+          enqueue            queue refresh-prices, refresh-catalog or purge now
 
         Environment:
           MANIFEST_ENV          Development or Production (default Development)
@@ -34,12 +36,21 @@ public static class Cli
           MANIFEST_DATABASE_URL where the data lives: sqlite://manifest.db (the
                                 default, relative to --root) or
                                 postgres://user:pass@host:5432/db?sslmode=require
-          MANIFEST_REDIS_URL    future shared cache/rate-limit/queue Redis URL
-          MANIFEST_OBJECT_STORAGE_ENDPOINT
-                                future S3-compatible object storage endpoint
-          MANIFEST_OBJECT_STORAGE_BUCKET
-                                future S3-compatible object storage bucket
-          MANIFEST_WORKER_MODE  inline, postgres, redis, or disabled
+          MANIFEST_REDIS_URL    redis://[:password@]host:6379 (rediss:// for TLS);
+                                when set, sign-in throttling is shared by every
+                                app container instead of kept per process
+          MANIFEST_OBJECT_STORAGE_ENDPOINT, _BUCKET, _ACCESS_KEY, _SECRET_KEY
+                                an S3-compatible bucket for card art in place of
+                                img-cache/ (also _REGION; _PATH_STYLE=false for AWS)
+          MANIFEST_WORKER_MODE  inline (jobs run in this process, the default),
+                                external (run by `manifest worker`), or disabled
+          MANIFEST_WORKER_CONCURRENCY
+                                jobs one process runs at once (default 4)
+          MANIFEST_SCAN_MODE    sync or async (default: async in Production)
+          MANIFEST_REFRESH_PRICES_HOURS, MANIFEST_REFRESH_CATALOG_HOURS
+                                refresh on a schedule; unset means never
+          MANIFEST_WEB_ROOT     serve the front end from this folder instead of
+                                the copy built into the binary, for editing it
           MANIFEST_UPLOAD_LIMIT_BYTES
                                 max request body size (default 8388608)
           ANTHROPIC_API_KEY     optional paid fallback for photos OCR cannot read

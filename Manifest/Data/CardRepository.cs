@@ -57,113 +57,182 @@ public sealed class CardRepository : ICardRepository, IScanRepository
     };
 
     /// <summary>
-    /// The catalogue is shared; the qty column beside each card is not. The owner
-    /// travels in the join rather than the WHERE clause, so a card nobody owns still
-    /// comes back with a qty of zero instead of vanishing from the results.
+    /// The orders a catalogue search can be paged through, by the names the UI's
+    /// sort menu uses. Each ends in card_id, which is unique, so every row has a
+    /// position of its own. Missing values sort as '' or -1 so they still have one:
+    /// a NULL compares as unknown and would fall out of the cursor's WHERE clause.
+    /// </summary>
+    static readonly Dictionary<string, Keyset> SearchSorts = Sorts("c.card_id", new()
+    {
+        ["number"] = new[] { Text("c.base_id"), Text("c.variant") },
+        ["colors"] = new[] { Text("COALESCE(c.colors, '')") },
+        ["set_label"] = new[] { Text("COALESCE(c.set_label, '')") },
+        ["types"] = new[] { Text("COALESCE(c.types, '')") },
+        ["price_gbp"] = new[] { Number("COALESCE(p.gbp, -1)", descending: true) },
+        ["qty"] = new[] { Number("COALESCE(k.qty, 0)", descending: true) },
+        ["not_owned"] = new[] { Number("COALESCE(k.qty, 0)") },
+    });
+
+    /// <summary>The same orders for the owned list, keyed on the collection's own card_id.</summary>
+    static readonly Dictionary<string, Keyset> CollectionSorts = Sorts("k.card_id", new()
+    {
+        ["number"] = Array.Empty<Keyset.Key>(),
+        ["colors"] = new[] { Text("COALESCE(c.colors, '')") },
+        ["set_label"] = new[] { Text("COALESCE(c.set_label, '')") },
+        ["types"] = new[] { Text("COALESCE(c.types, '')") },
+        ["price_gbp"] = new[] { Number("COALESCE(p.gbp, -1)", descending: true) },
+        ["qty"] = new[] { Number("k.qty", descending: true) },
+    });
+
+    static Keyset.Key Text(string expr) => new(expr, false, Keyset.Kind.Text);
+    static Keyset.Key Number(string expr, bool descending = false) =>
+        new(expr, descending, Keyset.Kind.Number);
+
+    static Dictionary<string, Keyset> Sorts(string unique, Dictionary<string, Keyset.Key[]> keys) =>
+        keys.ToDictionary(kv => kv.Key,
+                          kv => new Keyset(kv.Key, kv.Value.Append(Text(unique)).ToArray()));
+
+    static Keyset SortFor(Dictionary<string, Keyset> sorts, string? name) =>
+        sorts.TryGetValue(name ?? "number", out var s) ? s
+            : throw new FormatException($"unknown sort: {name}");
+
+    public static IReadOnlyCollection<string> SearchSortNames => SearchSorts.Keys;
+
+    /// <summary>
+    /// The old unpaged search, kept for callers that predate cursors: the first
+    /// page in card-number order, as long as they ask for, up to 3000.
     /// </summary>
     public List<SearchRow> Search(long userId, string? q, string? limit, bool ownedOnly,
                                   string? category, string? color, string? rarity,
                                   string? setLabel)
     {
-        q = (q ?? "").Trim();
+        // Browsing a filter with no typed query (e.g. every Leader) can legitimately
+        // return hundreds of rows, well past the old 200-row typeahead cap.
+        if (!int.TryParse(limit ?? "40", out var n))
+            throw new FormatException($"limit is not a number: {limit}");
 
-        var sql = new System.Text.StringBuilder($"""
-            SELECT {ListColumns}, COALESCE(k.qty, 0) AS qty, p.gbp AS price_gbp
-            FROM catalog c LEFT JOIN collection k
-                             ON k.card_id = c.card_id AND k.user_id = @user
-                           LEFT JOIN prices p ON p.card_id = c.card_id
-            """);
+        var filter = new CardFilter
+        {
+            Q = q,
+            Category = category,
+            Colors = string.IsNullOrEmpty(color) ? Array.Empty<string>() : new[] { color },
+            Rarity = rarity,
+            SetLabel = setLabel,
+            Owned = ownedOnly ? true : null,
+        };
+        return SearchPage(userId, filter, "number", Math.Clamp(n, 1, 3000), null).Items;
+    }
+
+    /// <summary>
+    /// The catalogue is shared; the qty column beside each card is not. The owner
+    /// travels in the join rather than the WHERE clause, so a card nobody owns still
+    /// comes back with a qty of zero instead of vanishing from the results.
+    /// </summary>
+    public Page<SearchRow> SearchPage(long userId, CardFilter filter, string? sort, int limit,
+                                      string? cursor)
+    {
+        var order = SortFor(SearchSorts, sort);
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.Bind("@user", userId);
 
         var where = new List<string>();
-        var args = new List<(string Name, object Value)> { ("@user", userId) };
-
+        var q = (filter.Q ?? "").Trim();
         if (q.Length > 0)
         {
             var exact = CardId.Normalise(q);
             if (exact is not null)
             {
                 where.Add("(c.card_id = @q_exact OR c.base_id = @q_base)");
-                args.Add(("@q_exact", exact));
-                args.Add(("@q_base", exact.Split('_')[0]));
+                cmd.Bind("@q_exact", exact);
+                cmd.Bind("@q_base", exact.Split('_')[0]);
             }
             else
             {
                 var like = _db.Dialect;
                 where.Add($"({like.Like("c.name", "@q_name")} OR {like.Like("c.card_id", "@q_id")} "
                           + $"OR {like.Like("c.types", "@q_types")})");
-                args.Add(("@q_name", $"%{q}%"));
-                args.Add(("@q_id", $"{q.ToUpperInvariant()}%"));
-                args.Add(("@q_types", $"%{q}%"));
+                cmd.Bind("@q_name", $"%{q}%");
+                cmd.Bind("@q_id", $"{q.ToUpperInvariant()}%");
+                cmd.Bind("@q_types", $"%{q}%");
             }
         }
-        if (ownedOnly)
-            where.Add("COALESCE(k.qty,0) > 0");
+        if (filter.Owned is { } owned)
+            where.Add(owned ? "COALESCE(k.qty, 0) > 0" : "COALESCE(k.qty, 0) = 0");
+        AddCatalogFilters(where, cmd, filter);
+        if (order.After(cursor, cmd, _db.Dialect) is { } after) where.Add(after);
 
-        // category = card type (Leader / Character / Event / Stage); compared
-        // case-insensitively since older catalogue snapshots stored these as
-        // shouty abbreviations (LEADER, CHARACTER...) rather than the current
-        // scraper's title case - see Facets(), which returns whichever the local
-        // catalogue actually has. color matches multi-colour cards too, e.g. a
-        // "Red" filter also hits a "Red, Blue" card.
-        if (!string.IsNullOrEmpty(category))
+        cmd.CommandText = $"""
+            SELECT {ListColumns}, COALESCE(k.qty, 0) AS qty, p.gbp AS price_gbp,
+                   {order.SelectColumns}
+            FROM catalog c LEFT JOIN collection k
+                             ON k.card_id = c.card_id AND k.user_id = @user
+                           LEFT JOIN prices p ON p.card_id = c.card_id
+            {(where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "")}
+            ORDER BY {order.OrderBy}
+            LIMIT @limit
+            """;
+        cmd.Bind("@limit", limit + 1);
+
+        return order.Read(cmd, limit, r => new SearchRow
+        {
+            CardId = r.Text("card_id"),
+            BaseId = r.Text("base_id"),
+            Variant = r.Text("variant"),
+            Name = r.Text("name"),
+            SetLabel = r.Str("set_label"),
+            SetName = r.Str("set_name"),
+            Rarity = r.Str("rarity"),
+            Category = r.Str("category"),
+            Colors = r.Str("colors"),
+            Cost = r.Int("cost"),
+            Power = r.Int("power"),
+            Counter = r.Int("counter"),
+            Types = r.Str("types"),
+            ImageUrl = r.Str("image_url"),
+            Qty = r.IntOr("qty"),
+            PriceGbp = r.Real("price_gbp"),
+        });
+    }
+
+    /// <summary>
+    /// The filters on catalogue columns, shared by search and the owned list.
+    /// category = card type (Leader / Character / Event / Stage); compared
+    /// case-insensitively since older catalogue snapshots stored these as shouty
+    /// abbreviations (LEADER, CHARACTER...) rather than the current scraper's title
+    /// case - see Facets(), which returns whichever the local catalogue actually
+    /// has. A colour matches multi-colour cards too, e.g. "Red" also hits a
+    /// "Red, Blue" card.
+    /// </summary>
+    void AddCatalogFilters(List<string> where, System.Data.Common.DbCommand cmd, CardFilter filter)
+    {
+        if (!string.IsNullOrEmpty(filter.Category))
         {
             where.Add("UPPER(c.category) = UPPER(@category)");
-            args.Add(("@category", category));
+            cmd.Bind("@category", filter.Category);
         }
-        if (!string.IsNullOrEmpty(color))
+        if (!string.IsNullOrEmpty(filter.ExcludeCategory))
         {
-            where.Add(_db.Dialect.Like("c.colors", "@color"));
-            args.Add(("@color", $"%{color}%"));
+            where.Add("UPPER(COALESCE(c.category, '')) <> UPPER(@exclude_category)");
+            cmd.Bind("@exclude_category", filter.ExcludeCategory);
         }
-        if (!string.IsNullOrEmpty(rarity))
+        var colors = filter.Colors.Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
+        if (colors.Count > 0)
+        {
+            where.Add("(" + string.Join(" OR ", colors.Select((_, i) =>
+                _db.Dialect.Like("c.colors", $"@color{i}"))) + ")");
+            for (var i = 0; i < colors.Count; i++) cmd.Bind($"@color{i}", $"%{colors[i].Trim()}%");
+        }
+        if (!string.IsNullOrEmpty(filter.Rarity))
         {
             where.Add("c.rarity = @rarity");
-            args.Add(("@rarity", rarity));
+            cmd.Bind("@rarity", filter.Rarity);
         }
-        if (!string.IsNullOrEmpty(setLabel))
+        if (!string.IsNullOrEmpty(filter.SetLabel))
         {
             where.Add("c.set_label = @set_label");
-            args.Add(("@set_label", setLabel));
+            cmd.Bind("@set_label", filter.SetLabel);
         }
-
-        if (where.Count > 0)
-            sql.Append(" WHERE ").Append(string.Join(" AND ", where));
-        sql.Append(" ORDER BY c.base_id, c.variant LIMIT @limit");
-
-        // Browsing a filter with no typed query (e.g. every Leader) can legitimately
-        // return hundreds of rows, well past the old 200-row typeahead cap.
-        if (!int.TryParse(limit ?? "40", out var n))
-            throw new FormatException($"limit is not a number: {limit}");
-        args.Add(("@limit", Math.Min(n, 3000)));
-
-        using var conn = _db.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql.ToString();
-        foreach (var (name, value) in args) cmd.Bind(name, value);
-
-        var results = new List<SearchRow>();
-        using var r = cmd.ExecuteReader();
-        while (r.Read())
-            results.Add(new SearchRow
-            {
-                CardId = r.Text("card_id"),
-                BaseId = r.Text("base_id"),
-                Variant = r.Text("variant"),
-                Name = r.Text("name"),
-                SetLabel = r.Str("set_label"),
-                SetName = r.Str("set_name"),
-                Rarity = r.Str("rarity"),
-                Category = r.Str("category"),
-                Colors = r.Str("colors"),
-                Cost = r.Int("cost"),
-                Power = r.Int("power"),
-                Counter = r.Int("counter"),
-                Types = r.Str("types"),
-                ImageUrl = r.Str("image_url"),
-                Qty = r.IntOr("qty"),
-                PriceGbp = r.Real("price_gbp"),
-            });
-        return results;
     }
 
     /// <summary>
@@ -239,6 +308,64 @@ public sealed class CardRepository : ICardRepository, IScanRepository
                 PriceGbp = r.Real("price_gbp"),
             });
         return rows;
+    }
+
+    /// <summary>
+    /// One page of what an account owns. Cards logged by number before they reached
+    /// the catalogue are included - they have no catalogue row to filter on, so any
+    /// catalogue filter leaves them out, but a plain listing or a number search does
+    /// not.
+    /// </summary>
+    public Page<CollectionRow> CollectionPage(long userId, CardFilter filter, string? sort,
+                                              int limit, string? cursor)
+    {
+        var order = SortFor(CollectionSorts, sort);
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.Bind("@user", userId);
+
+        var where = new List<string> { "k.user_id = @user", "k.qty > 0" };
+        var q = (filter.Q ?? "").Trim();
+        if (q.Length > 0)
+        {
+            where.Add($"({_db.Dialect.Like("k.card_id", "@q")} OR {_db.Dialect.Like("c.name", "@q")})");
+            cmd.Bind("@q", $"%{q}%");
+        }
+        AddCatalogFilters(where, cmd, filter);
+        if (order.After(cursor, cmd, _db.Dialect) is { } after) where.Add(after);
+
+        cmd.CommandText = $"""
+            SELECT k.card_id, k.qty, k.note, k.updated_at,
+                   c.name, c.set_label, c.rarity, c.variant, c.colors,
+                   c.category, c.image_url, c.cost, c.power, c.counter, c.types,
+                   p.gbp AS price_gbp, {order.SelectColumns}
+            FROM collection k LEFT JOIN catalog c ON c.card_id = k.card_id
+                              LEFT JOIN prices p ON p.card_id = k.card_id
+            WHERE {string.Join(" AND ", where)}
+            ORDER BY {order.OrderBy}
+            LIMIT @limit
+            """;
+        cmd.Bind("@limit", limit + 1);
+
+        return order.Read(cmd, limit, r => new CollectionRow
+        {
+            CardId = r.Text("card_id"),
+            Qty = r.IntOr("qty"),
+            Note = r.Text("note"),
+            UpdatedAt = r.Str("updated_at"),
+            Name = r.Str("name"),
+            SetLabel = r.Str("set_label"),
+            Rarity = r.Str("rarity"),
+            Variant = r.Str("variant"),
+            Colors = r.Str("colors"),
+            Category = r.Str("category"),
+            ImageUrl = r.Str("image_url"),
+            Cost = r.Int("cost"),
+            Power = r.Int("power"),
+            Counter = r.Int("counter"),
+            Types = r.Str("types"),
+            PriceGbp = r.Real("price_gbp"),
+        });
     }
 
     public CardDetailRow? CardDetail(long userId, string rawCardId)

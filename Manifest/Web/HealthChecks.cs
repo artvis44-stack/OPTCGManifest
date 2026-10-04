@@ -1,5 +1,5 @@
-using System.Net.Sockets;
 using Manifest.Data;
+using StackExchange.Redis;
 
 namespace Manifest.Web;
 
@@ -14,12 +14,13 @@ public static class HealthChecks
         IReadOnlyDictionary<string, Component> Checks);
 
     public static async Task<(int Status, ReadyResponse Body)> Ready(
-        AppConfig config, Database database, CancellationToken cancel)
+        AppConfig config, Database database, IConnectionMultiplexer? redis,
+        CancellationToken cancel)
     {
         var checks = new Dictionary<string, Component>(StringComparer.OrdinalIgnoreCase)
         {
             ["database"] = DatabaseCheck(database),
-            ["redis"] = await Redis(config, cancel),
+            ["redis"] = await Redis(config, redis),
             ["object_storage"] = await ObjectStorage(config, cancel),
         };
 
@@ -50,17 +51,24 @@ public static class HealthChecks
         }
     }
 
-    static async Task<Component> Redis(AppConfig config, CancellationToken cancel)
+    /// <summary>
+    /// A PING through the connection the app actually uses, so a wrong password or
+    /// database number shows up here and not only as throttle errors in the log.
+    /// </summary>
+    static async Task<Component> Redis(AppConfig config, IConnectionMultiplexer? redis)
     {
-        if (string.IsNullOrWhiteSpace(config.RedisUrl))
+        if (string.IsNullOrWhiteSpace(config.RedisUrl) || redis is null)
             return new Component("not_configured");
 
-        var uri = ParseRedis(config.RedisUrl);
-        if (uri is null)
-            return new Component("fail", "MANIFEST_REDIS_URL is not a valid redis URL");
-
-        var port = uri.Port > 0 ? uri.Port : 6379;
-        return await Tcp(uri.Host, port, "Redis", cancel);
+        try
+        {
+            var rtt = await redis.GetDatabase().PingAsync();
+            return new Component("ok", $"{rtt.TotalMilliseconds:0.0} ms");
+        }
+        catch (Exception e) when (e is RedisException or TimeoutException)
+        {
+            return new Component("fail", $"Redis: {e.Message}");
+        }
     }
 
     static async Task<Component> ObjectStorage(AppConfig config, CancellationToken cancel)
@@ -92,41 +100,9 @@ public static class HealthChecks
 
     static Component WorkerQueue(AppConfig config, IReadOnlyDictionary<string, Component> checks)
     {
-        return config.WorkerMode.Trim().ToLowerInvariant() switch
-        {
-            "disabled" => new Component("disabled"),
-            "inline" => new Component("ok", "inline"),
-            "postgres" => checks["database"].Status == "ok"
-                ? new Component("ok", "database-backed queue")
-                : new Component("fail", "database is not ready"),
-            "redis" => checks["redis"].Status == "ok"
-                ? new Component("ok", "redis-backed queue")
-                : new Component("fail", "redis is not ready"),
-            _ => new Component("fail", "unknown worker mode"),
-        };
-    }
-
-    static Uri? ParseRedis(string value)
-    {
-        var raw = value.Contains("://", StringComparison.Ordinal)
-            ? value
-            : "redis://" + value;
-        return Uri.TryCreate(raw, UriKind.Absolute, out var uri) ? uri : null;
-    }
-
-    static async Task<Component> Tcp(string host, int port, string name, CancellationToken cancel)
-    {
-        using var tcp = new TcpClient();
-        try
-        {
-            await tcp.ConnectAsync(host, port, cancel).AsTask()
-                .WaitAsync(TimeSpan.FromSeconds(2), cancel);
-            return new Component("ok");
-        }
-        catch (Exception e) when (e is SocketException or TimeoutException
-                                     or OperationCanceledException)
-        {
-            return new Component("fail", $"{name} connection failed: {e.Message}");
-        }
+        if (config.WorkerMode == "disabled") return new Component("disabled");
+        return checks["database"].Status == "ok"
+            ? new Component("ok", $"{config.WorkerMode}, database-backed queue")
+            : new Component("fail", "database is not ready");
     }
 }

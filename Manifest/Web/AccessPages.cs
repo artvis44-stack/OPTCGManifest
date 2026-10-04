@@ -36,6 +36,8 @@ h1{font-size:21px;margin:0;letter-spacing:.02em}
 h2{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--gold);margin:0 0 14px}
 .who{font-size:19px;font-weight:600;word-break:break-all;margin-bottom:4px}
 .meta{font-size:12px;color:var(--faint);font-family:var(--mono)}
+.meta.lead{margin-top:13px;line-height:1.6}
+.meta.under{margin-top:5px}
 .note{margin:14px 0 0;padding:11px 13px;border-left:3px solid var(--gold);
   background:rgba(3,18,26,.45);border-radius:0 8px 8px 0;font-size:14px;
   line-height:1.55;white-space:pre-wrap;word-break:break-word}
@@ -106,7 +108,7 @@ a{color:var(--gold)}
         <button class=yes id=approve>Approve — send them a sign-up link</button>
         <button class=no id=deny>Deny</button>
       </div>
-      <div class=meta style="margin-top:13px;line-height:1.6">
+      <div class="meta lead">
         Approving emails a link that makes one account and then stops working.<br>
         Denying is silent — they are not told either way.
       </div>
@@ -171,7 +173,7 @@ async function decide(decision) {
     if (data.decision === 'denied') {
       show('Denied. ' + data.email + ' has not been told, and the link in your email '
          + 'no longer works.', 'good');
-    } else if (data.mail === 'sent') {
+    } else if (data.mail === 'sent' || data.mail === 'queued') {
       show('Approved. A sign-up link is on its way to ' + data.email + '.', 'good');
     } else if (data.mail === 'logged') {
       show('Approved. No SMTP is configured on this server, so the sign-up link was '
@@ -251,7 +253,7 @@ function render(r) {
 
   return '<div class=item>'
        + '<div class=top><span class=addr>' + escape(r.email) + '</span>' + tag(r) + '</div>'
-       + '<div class=meta style="margin-top:5px">' + lines.join(' · ') + '</div>'
+       + '<div class="meta under">' + lines.join(' · ') + '</div>'
        + (r.note ? '<div class=note>' + escape(r.note) + '</div>' : '')
        + buttons
        + '</div>';
@@ -313,8 +315,9 @@ document.addEventListener('click', async e => {
     } else if (data.decision === 'denied') {
       $('mail').textContent = 'Denied ' + data.email + '. They have not been told.';
       $('mail').className = 'msg good';
-    } else if (data.mail === 'sent') {
-      $('mail').textContent = 'Sent a sign-up link to ' + data.email + '.';
+    } else if (data.mail === 'sent' || data.mail === 'queued') {
+      $('mail').textContent = (data.mail === 'sent' ? 'Sent' : 'Sending')
+                            + ' a sign-up link to ' + data.email + '.';
       $('mail').className = 'msg good';
     } else if (data.mail === 'logged') {
       $('mail').textContent = 'Approved ' + data.email + '. No SMTP configured, so the '

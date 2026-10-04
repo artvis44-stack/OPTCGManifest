@@ -59,7 +59,10 @@ to `make_cert.sh` and skip themselves if `openssl` is missing.
 | `Web/Endpoints.cs` | every route |
 | `Web/SetupHelper.cs` | the plain-http certificate-install listener |
 | `Data/` | connection handling, schema, card and deck repositories; `SqlDialect` holds the few SQLite/PostgreSQL differences, `Migrations/Postgres/` the versioned PostgreSQL schema |
-| `Services/` | card-id parsing, deck analysis, image cache, the two scanners |
+| `Services/` | card-id parsing, deck analysis, the image store and cache, the scanners, `ServiceSetup` (everything registered once for web and worker) |
+| `Services/Jobs/` | the job worker, its schedule, the handlers and the mail outbox; the queue itself is `Data/JobQueue.cs` |
+| `WorkerHost.cs` | `manifest worker` and `manifest enqueue` |
+| `wwwroot/` | the front end, embedded and served by `Web/WebAssets.cs` under a strict CSP (`Web/SecurityHeaders.cs`) |
 | `Tools/` | the catalogue scraper and the two refresh jobs |
 
 ## Notes

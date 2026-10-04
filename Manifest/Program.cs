@@ -6,13 +6,18 @@ using System.Text.Json;
 using Manifest;
 using Manifest.Data;
 using Manifest.Services;
+using Manifest.Services.Jobs;
 using Manifest.Tools;
 using Manifest.Web;
 
 // The catalogue and price tools are subcommands of the same binary rather than
 // separate scripts, so there is one thing to build and one thing to ship.
+if (args.Length > 0 && args[0] == "worker")
+    return await WorkerHost.Run(args[1..]);
+
 if (args.Length > 0
-    && args[0] is "scrape" or "refresh-catalog" or "refresh-prices" or "user" or "migrate-sqlite")
+    && args[0] is "scrape" or "refresh-catalog" or "refresh-prices" or "user" or "migrate-sqlite"
+                  or "enqueue")
 {
     var toolPaths = new AppPaths(Cli.RootFrom(args));
     return args[0] switch
@@ -22,6 +27,7 @@ if (args.Length > 0
         "refresh-prices" => await PriceRefresh.Run(toolPaths, new Database(toolPaths)),
         "user" => UserAdmin.Run(args[1..], new Database(toolPaths)),
         "migrate-sqlite" => SqliteToPostgres.Run(args[1..], toolPaths),
+        "enqueue" => WorkerHost.Enqueue(args[1..], toolPaths),
         _ => 1,
     };
 }
@@ -78,28 +84,10 @@ builder.WebHost.ConfigureKestrel(options =>
     });
 });
 
-builder.Services.AddSingleton(config);
-builder.Services.AddSingleton(paths);
-builder.Services.AddSingleton(database);
-builder.Services.AddSingleton<IClock>(SystemClock.Instance);
-builder.Services.AddSingleton<UserRepository>();
-builder.Services.AddSingleton<IUserRepository>(sp => sp.GetRequiredService<UserRepository>());
-builder.Services.AddSingleton<ISessionRepository>(sp => sp.GetRequiredService<UserRepository>());
-builder.Services.AddSingleton<AccessRepository>();
-builder.Services.AddSingleton<IAccessRepository>(sp => sp.GetRequiredService<AccessRepository>());
-builder.Services.AddSingleton(mailSettings);
-builder.Services.AddSingleton<Mailer>();
-builder.Services.AddSingleton<CardRepository>();
-builder.Services.AddSingleton<ICardRepository>(sp => sp.GetRequiredService<CardRepository>());
-builder.Services.AddSingleton<IScanRepository>(sp => sp.GetRequiredService<CardRepository>());
-builder.Services.AddSingleton<DeckRepository>();
-builder.Services.AddSingleton<IDeckRepository>(sp => sp.GetRequiredService<DeckRepository>());
-builder.Services.AddSingleton<ImageCache>();
-builder.Services.AddSingleton<TesseractScanner>();
-builder.Services.AddSingleton<ApiScanner>();
+builder.Services.AddManifest(config, paths, database, mailSettings);
+if (config.RunsJobsInline) builder.Services.AddHostedService<JobWorker>();
 
 var app = builder.Build();
-LoginThrottle.UseClock(app.Services.GetRequiredService<IClock>());
 
 var requestLogger = app.Services.GetRequiredService<ILoggerFactory>()
     .CreateLogger("Manifest.Requests");
@@ -209,6 +197,14 @@ else
     Console.WriteLine($"  Your phone   : {scheme}://{ip}:{config.Port}");
 }
 Console.WriteLine($"  Database     : {database.Description}");
+Console.WriteLine($"  Throttling   : {app.Services.GetRequiredService<ILoginThrottle>().Description}");
+Console.WriteLine($"  Card art     : {app.Services.GetRequiredService<IImageStore>().Description}");
+Console.WriteLine("  Jobs         : " + config.WorkerMode switch
+{
+    "inline" => $"run in this process, {config.WorkerConcurrency} at a time",
+    "external" => "queued here, run by `manifest worker`",
+    _ => "disabled - nothing runs queued work",
+} + (config.ScansAsync ? "; scans are read in the background" : ""));
 var accountCount = accounts.Count();
 if (accountCount == 0 && AppConfig.RegistrationOpen)
     Console.WriteLine("  Accounts     : none yet - the first one created owns any "

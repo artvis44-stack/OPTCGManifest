@@ -50,7 +50,7 @@ public sealed class ServerFixture : IAsyncLifetime
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
         {
-            if (File.Exists(Path.Combine(dir.FullName, "ui.html"))) return dir.FullName;
+            if (File.Exists(Path.Combine(dir.FullName, "catalog.json"))) return dir.FullName;
             dir = dir.Parent;
         }
         throw new InvalidOperationException("could not find the repository root");
@@ -59,7 +59,7 @@ public sealed class ServerFixture : IAsyncLifetime
     public async Task InitializeAsync()
     {
         WorkDir = Directory.CreateTempSubdirectory("manifest-test-").FullName;
-        foreach (var f in new[] { "ui.html", "catalog.json" })
+        foreach (var f in new[] { "catalog.json" })
             File.Copy(Path.Combine(RepoRoot, f), Path.Combine(WorkDir, f));
 
         (_postgresDatabase, DatabaseUrl) = CreateTestDatabase();
@@ -243,6 +243,26 @@ public sealed class ServerFixture : IAsyncLifetime
             cmd.Parameters.Add(p);
         }
         cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>One value from whatever database the server is using.</summary>
+    public object? QueryScalar(string sql, params (string Name, object Value)[] args)
+    {
+        using System.Data.Common.DbConnection conn = DatabaseUrl is null
+            ? new SqliteConnection($"Data Source={Path.Combine(WorkDir, "manifest.db")}")
+            : new NpgsqlConnection(ConnectionString(DatabaseUrl));
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var (name, value) in args)
+        {
+            var p = cmd.CreateParameter();
+            p.ParameterName = name;
+            p.Value = value;
+            cmd.Parameters.Add(p);
+        }
+        var result = cmd.ExecuteScalar();
+        return result is DBNull ? null : result;
     }
 
     static void AdminExec(string adminUrl, string sql)
