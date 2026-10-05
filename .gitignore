@@ -22,3 +22,6 @@ graphify-out/cache/
 # Deployment settings, with secrets in them
 .env
 backups/
+
+# Load test output
+loadtest/results/

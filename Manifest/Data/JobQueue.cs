@@ -221,6 +221,40 @@ public sealed class JobQueue
         return (r.Long("queued"), r.Long("running"), r.Long("failed"));
     }
 
+    /// <summary>What the metrics report: work waiting, under way and given up on.</summary>
+    public sealed record Backlog(long Due, long Running, long Failed, double OldestDueSeconds);
+
+    /// <summary>
+    /// Like <see cref="Depth"/>, but counting only queued jobs that are due - a
+    /// retry waiting out its back-off is not a backlog - and how long the oldest
+    /// of those has been waiting, which is what says the workers are falling behind.
+    /// </summary>
+    public Backlog ReadBacklog()
+    {
+        var now = _clock.UtcNow;
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT COALESCE(SUM(CASE WHEN status = 'queued' AND run_after <= @now THEN 1 ELSE 0 END), 0) AS due,
+                   COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running,
+                   COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+                   MIN(CASE WHEN status = 'queued' AND run_after <= @now THEN run_after END) AS oldest
+            FROM jobs
+            """;
+        cmd.Bind("@now", _db.Dialect.Time(now));
+        using var r = cmd.ExecuteReader();
+        r.Read();
+        var oldest = r.Str("oldest") is { } stamp
+                     && DateTime.TryParseExact(stamp, ReaderExtensions.StampFormat,
+                                               System.Globalization.CultureInfo.InvariantCulture,
+                                               System.Globalization.DateTimeStyles.AdjustToUniversal
+                                               | System.Globalization.DateTimeStyles.AssumeUniversal,
+                                               out var at)
+            ? Math.Max(0, (now - at).TotalSeconds)
+            : 0;
+        return new Backlog(r.Long("due"), r.Long("running"), r.Long("failed"), oldest);
+    }
+
     /// <summary>
     /// Clears out finished rows: done ones after a day, failed ones after a week, so
     /// there is time to see why something failed before it disappears.

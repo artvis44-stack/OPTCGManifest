@@ -455,6 +455,7 @@ public static class Endpoints
             var who = ctx.ClientIp(config.BehindProxy);
             if (await throttle.RetryAfter(who) is { } wait)
             {
+                Telemetry.AuthAttempt("login", "throttled");
                 ctx.Response.Headers["Retry-After"] = wait.ToString();
                 await ctx.Json(429, new
                 {
@@ -468,6 +469,7 @@ public static class Endpoints
             if (user is null)
             {
                 await throttle.Failed(who);
+                Telemetry.AuthAttempt("login", "refused");
                 // One message for both halves: saying which was wrong tells an
                 // attacker which usernames exist.
                 await ctx.Json(401, new { error = "That username and password do not match." });
@@ -475,6 +477,7 @@ public static class Endpoints
             }
 
             await throttle.Succeeded(who);
+            Telemetry.AuthAttempt("login", "ok");
             ctx.SetSessionCookie(users.StartSession(user.Id));
             await ctx.Json(200, new
             {
@@ -494,6 +497,7 @@ public static class Endpoints
             var who = ctx.ClientIp(config.BehindProxy);
             if (await throttle.RetryAfter(who) is { } wait)
             {
+                Telemetry.AuthAttempt("register", "throttled");
                 ctx.Response.Headers["Retry-After"] = wait.ToString();
                 await ctx.Json(429, new
                 {
@@ -513,6 +517,7 @@ public static class Endpoints
                 // A wrong invite counts against the same allowance as a wrong
                 // password, so neither can be guessed any faster than the other.
                 await throttle.Failed(who);
+                Telemetry.AuthAttempt("register", "refused");
                 await ctx.Json(403, new { error = WhyNot(offered) });
                 return;
             }
@@ -558,6 +563,7 @@ public static class Endpoints
                 if (invite is not null) access.Attach(invite.Id, user.Id);
 
                 await throttle.Succeeded(who);
+                Telemetry.AuthAttempt("register", "ok");
                 ctx.SetSessionCookie(users.StartSession(user.Id));
                 await ctx.Json(200, new
                 {

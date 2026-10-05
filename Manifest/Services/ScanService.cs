@@ -15,7 +15,27 @@ namespace Manifest.Services;
 public sealed class ScanService(TesseractScanner tesseract, ApiScanner api, CardRepository cards,
                                 AppConfig config) : IJobHandler
 {
-    public async Task<ScanResponse> Read(long userId, ScanPost body)
+    /// <summary>Reads a scan inside the request (MANIFEST_SCAN_MODE=sync).</summary>
+    public Task<ScanResponse> Read(long userId, ScanPost body) => Timed("sync", userId, body);
+
+    async Task<ScanResponse> Timed(string mode, long userId, ScanPost body)
+    {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        var outcome = "error";
+        try
+        {
+            var result = await ReadAny(userId, body);
+            outcome = result.Ok ? "read" : result.Error ?? "no_read";
+            return result;
+        }
+        finally
+        {
+            Telemetry.Scan(mode, outcome,
+                           System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds);
+        }
+    }
+
+    async Task<ScanResponse> ReadAny(long userId, ScanPost body)
     {
         var variants = body.Variants ?? new List<string>();
         var img = body.Image;
@@ -77,6 +97,6 @@ public sealed class ScanService(TesseractScanner tesseract, ApiScanner api, Card
     public async Task<object?> Run(Job job, CancellationToken cancel)
     {
         var body = JsonSerializer.Deserialize<ScanPost>(job.Payload, Json.Options) ?? new ScanPost();
-        return await Read(job.UserId ?? Database.Unclaimed, body);
+        return await Timed("async", job.UserId ?? Database.Unclaimed, body);
     }
 }

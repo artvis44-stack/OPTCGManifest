@@ -144,6 +144,26 @@ public sealed class AppConfig
         _ => IsProduction,
     };
 
+    /// <summary>
+    /// Where to serve /metrics for Prometheus: a port (this machine only) or
+    /// address:port. Unset, nothing is listening. It is its own listener, not a
+    /// route on the site, so the reverse proxy never forwards it and the numbers -
+    /// which routes are busy, how deep the queue is - are not public.
+    /// </summary>
+    public string? MetricsListen { get; init; } = Env("MANIFEST_METRICS_LISTEN");
+
+    /// <summary><see cref="MetricsListen"/> as an endpoint, or null when unset or unreadable.</summary>
+    public System.Net.IPEndPoint? MetricsEndpoint => ParseListen(MetricsListen);
+
+    public static System.Net.IPEndPoint? ParseListen(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        value = value.Trim();
+        if (int.TryParse(value, out var bare))
+            return bare is > 0 and <= 65535 ? new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, bare) : null;
+        return System.Net.IPEndPoint.TryParse(value, out var endpoint) && endpoint.Port > 0 ? endpoint : null;
+    }
+
     public string ObjectStorageRegion { get; init; } =
         Env("MANIFEST_OBJECT_STORAGE_REGION") ?? Env("AWS_REGION") ?? "us-east-1";
 
@@ -251,6 +271,11 @@ public sealed class AppConfig
         if (ScansAsync && WorkerMode == "disabled")
             errors.Add("Asynchronous scans need a worker: set MANIFEST_WORKER_MODE to inline or "
                        + "external, or MANIFEST_SCAN_MODE=sync.");
+
+        if (MetricsListen is not null && MetricsEndpoint is null)
+            errors.Add("MANIFEST_METRICS_LISTEN must be a port or address:port, e.g. 9464 or 0.0.0.0:9464.");
+        else if (MetricsEndpoint is { } metrics && metrics.Port == Port)
+            errors.Add("MANIFEST_METRICS_LISTEN must use a different port from the site.");
 
         foreach (var name in new[] { "MANIFEST_REFRESH_PRICES_HOURS", "MANIFEST_REFRESH_CATALOG_HOURS" })
             if (Env(name) is { } raw && !(double.TryParse(raw, out var h) && h > 0))

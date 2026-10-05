@@ -5,6 +5,9 @@
 #   docker compose up --build
 #   open http://localhost:8420
 #
+# With `--profile monitoring`, Prometheus at http://localhost:9090 scrapes the app
+# and worker - useful while running the load tests in loadtest/.
+#
 # Accounts: set MANIFEST_INVITE_CODE in .env to sign up from the page, or
 #   docker compose exec app manifest-entrypoint user add <name>
 
@@ -25,6 +28,7 @@ x-manifest: &manifest
     MANIFEST_OBJECT_STORAGE_SECRET_KEY: manifest-local-secret
     MANIFEST_WORKER_MODE: external
     MANIFEST_SCAN_MODE: async
+    MANIFEST_METRICS_LISTEN: 0.0.0.0:9464
   depends_on:
     postgres: { condition: service_healthy }
     redis: { condition: service_started }
@@ -81,6 +85,18 @@ services:
     volumes:
       - ./docker/seaweedfs.sh:/seaweedfs.sh:ro,Z
       - s3-data:/data
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: [monitoring]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./docker/prometheus.local.yml:/etc/prometheus/prometheus.yml:ro,Z
+      - ./docker/alerts.yml:/etc/prometheus/alerts.yml:ro,Z
 
 volumes:
   app-data:

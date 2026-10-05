@@ -1,6 +1,7 @@
 using Manifest.Data;
 using Manifest.Services;
 using Manifest.Services.Jobs;
+using Manifest.Web;
 
 namespace Manifest;
 
@@ -44,6 +45,11 @@ public static class WorkerHost
             Console.Error.WriteLine(badUrl);
             return 1;
         }
+        if (config.MetricsListen is not null && config.MetricsEndpoint is null)
+        {
+            Console.Error.WriteLine("MANIFEST_METRICS_LISTEN must be a port or address:port, e.g. 9464 or 0.0.0.0:9464.");
+            return 1;
+        }
         var paths = new AppPaths(config.Root);
         var database = new Database(paths, config.DatabaseUrl);
         if (database.Initialise(false) is { } error)
@@ -64,11 +70,16 @@ public static class WorkerHost
         builder.Services.AddManifest(config, paths, database, MailSettings.FromEnvironment());
         builder.Services.AddHostedService<JobWorker>();
         var host = builder.Build();
+        var metrics = await MetricsServer.Start(config, host.Services.GetRequiredService<JobQueue>(),
+                                                host.Services.GetRequiredService<ILoggerFactory>()
+                                                    .CreateLogger("Manifest.Metrics"));
 
         Console.WriteLine($"\n  Manifest {AppConfig.Version} worker is up.");
         Console.WriteLine($"  Database     : {database.Description}");
         Console.WriteLine($"  Card art     : {host.Services.GetRequiredService<IImageStore>().Description}");
         Console.WriteLine($"  At a time    : {config.WorkerConcurrency}");
+        if (metrics is not null && config.MetricsEndpoint is { } metricsAt)
+            Console.WriteLine($"  Metrics      : {MetricsServer.Describe(metricsAt)}");
         if (config.WorkerMode == "inline")
             Console.WriteLine("  Note         : MANIFEST_WORKER_MODE is inline, so the web process runs "
                               + "jobs too. That works - they share the queue - but set it to "
@@ -76,6 +87,7 @@ public static class WorkerHost
         Console.WriteLine("  Ctrl-C to stop.\n");
 
         await host.RunAsync();
+        if (metrics is not null) await metrics.StopAsync();
         return 0;
     }
 

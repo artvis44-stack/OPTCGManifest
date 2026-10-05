@@ -1,0 +1,230 @@
+# Alert rules for Manifest, loaded by the Prometheus in the `monitoring` profile
+# of docker-compose.prod.yml. Thresholds come from the launch targets in
+# SCALING_PLAN.md: reads under 300 ms and writes under 500 ms at p95. Check edits
+# with:
+#
+#   docker run --rm -v ./docker:/d:ro --entrypoint promtool prom/prometheus check rules /d/alerts.yml
+#
+# Every app and worker process reports the same queue gauges (they read one
+# table), so those rules take max(), never sum().
+
+groups:
+  - name: manifest-availability
+    rules:
+      - alert: ManifestTargetDown
+        expr: up{job=~"manifest-.*"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} at {{ $labels.instance }} is not answering /metrics"
+          description: "A container has stopped or is wedged. `docker compose -f docker-compose.prod.yml ps` and its logs."
+
+      - alert: ManifestNoAppRunning
+        expr: absent(up{job="manifest-app"} == 1)
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "No app container is up; the site is down"
+
+      - alert: ManifestNoWorkerRunning
+        expr: absent(up{job="manifest-worker"} == 1)
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "No worker is up; scans, mail and card art are not being processed"
+
+      - alert: ManifestDatabaseUnreachable
+        expr: max(manifest_database_up) == 0 or absent(manifest_database_up)
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "The app cannot query PostgreSQL"
+          description: "Every request that touches data is failing. Check the postgres container and its disk."
+
+      - alert: ManifestDatabaseErrors
+        expr: sum(increase(manifest_db_command_failures_total[5m])) > 10
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value | humanize }} failed database commands in 5 minutes"
+
+      - alert: ManifestDatabasePoolExhausted
+        expr: max(manifest_db_connection_waiters) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Requests are queuing for a database connection"
+          description: "The Npgsql pool (100 per process) is full. Look for slow queries before raising Max Pool Size."
+
+      - alert: ManifestDatabaseConnectionTimeouts
+        expr: sum(increase(manifest_db_connection_timeouts_total[10m])) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Requests gave up waiting for a database connection"
+
+  - name: manifest-latency-and-errors
+    rules:
+      - alert: ManifestServerErrors
+        expr: |
+          sum(rate(manifest_http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(manifest_http_requests_total[5m])), 1e-9) > 0.02
+          and sum(rate(manifest_http_requests_total[5m])) > 0.1
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of requests are failing with 5xx"
+          description: "The app log has each one with its request_id."
+
+      - alert: ManifestSlowReads
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(
+            manifest_http_request_duration_seconds_bucket{method="GET", route!~"/img/.*|unmatched"}[5m]))) > 0.3
+          and sum(rate(manifest_http_request_duration_seconds_count{method="GET"}[5m])) > 0.1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 read latency is {{ $value | humanizeDuration }} (target 300ms)"
+
+      - alert: ManifestSlowWrites
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(
+            manifest_http_request_duration_seconds_bucket{method="POST", route!~"/api/auth/.*"}[5m]))) > 0.5
+          and sum(rate(manifest_http_request_duration_seconds_count{method="POST"}[5m])) > 0.05
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 write latency is {{ $value | humanizeDuration }} (target 500ms)"
+          description: "Sign-in and registration are left out: password hashing is slow on purpose."
+
+      - alert: ManifestSlowDatabase
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(manifest_db_command_duration_seconds_bucket[5m]))) > 0.1
+          and sum(rate(manifest_db_command_duration_seconds_count[5m])) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 database command time is {{ $value | humanizeDuration }}"
+
+      - alert: ManifestThreadPoolStarved
+        expr: max(manifest_dotnet_threadpool_queue_length) > 50
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.instance }} has work waiting for threads; something is blocking them"
+
+  - name: manifest-jobs
+    rules:
+      - alert: ManifestQueueBacklog
+        expr: max(manifest_jobs_oldest_due_seconds) > 120
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "The oldest due job has waited {{ $value | humanizeDuration }} for a worker"
+          description: "Workers are behind or stuck. Raise WORKER_REPLICAS or MANIFEST_WORKER_CONCURRENCY, or look at what is running."
+
+      - alert: ManifestQueueStalled
+        expr: max(manifest_jobs_oldest_due_seconds) > 900
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Jobs have waited over 15 minutes; scans and mail are effectively down"
+
+      - alert: ManifestJobsFailing
+        expr: sum by (type) (increase(manifest_jobs_total{outcome="failed"}[1h])) > 5
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value | humanize }} {{ $labels.type }} jobs ran out of attempts in the last hour"
+          description: "`SELECT id, last_error FROM jobs WHERE status = 'failed' AND type = '{{ $labels.type }}' ORDER BY id DESC LIMIT 20`"
+
+      - alert: ManifestMailFailing
+        expr: sum(increase(manifest_jobs_total{type="SendEmail", outcome=~"retry|failed"}[30m])) > 3
+        labels: { severity: critical }
+        annotations:
+          summary: "Mail is not going out; access requests and invite links are stuck"
+
+      - alert: ManifestSlowScans
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(manifest_scan_duration_seconds_bucket[15m]))) > 10
+          and sum(rate(manifest_scan_duration_seconds_count[15m])) > 0.01
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 scan read time is {{ $value | humanizeDuration }}"
+
+      - alert: ManifestCardArtFetchesFailing
+        expr: |
+          sum(increase(manifest_image_fetches_total{outcome="failed"}[1h])) > 50
+          and sum(increase(manifest_image_fetches_total{outcome="failed"}[1h]))
+            > sum(increase(manifest_image_fetches_total{outcome="stored"}[1h]))
+        labels: { severity: warning }
+        annotations:
+          summary: "Most card art fetches are failing; the card site may be down or blocking us"
+
+  - name: manifest-security
+    rules:
+      - alert: ManifestSignInFailureSpike
+        expr: sum(increase(manifest_auth_attempts_total{outcome="refused"}[15m])) > 100
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value | humanize }} refused sign-ins in 15 minutes; someone may be guessing passwords"
+
+      - alert: ManifestRateLimitingHeavy
+        expr: sum(increase(manifest_rate_limited_total[15m])) > 200
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value | humanize }} requests were rate-limited in 15 minutes"
+
+  - name: manifest-host
+    rules:
+      - alert: HostDiskFilling
+        expr: |
+          node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} < 0.15
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.mountpoint }} has {{ $value | humanizePercentage }} free"
+          description: "PostgreSQL, the card art store and backups/ all live on this disk. Prune old images (`docker image prune`) and backups first."
+
+      - alert: HostDiskAlmostFull
+        expr: |
+          node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} < 0.05
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.mountpoint }} is almost full; PostgreSQL will stop accepting writes"
+
+      - alert: HostDiskFullWithin24h
+        expr: predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}[6h], 24 * 3600) < 0
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.mountpoint }} will be full within a day at the current rate"
+
+      - alert: HostMemoryLow
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of memory is available"
+
+  - name: manifest-backups
+    rules:
+      - alert: ManifestBackupMissing
+        expr: absent(manifest_backup_last_success_timestamp_seconds)
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "No database backup has been recorded; is the backup cron job installed?"
+
+      - alert: ManifestBackupStale
+        expr: time() - manifest_backup_last_success_timestamp_seconds > 26 * 3600
+        labels: { severity: critical }
+        annotations:
+          summary: "The last good database backup is {{ $value | humanizeDuration }} old"
+
+      - alert: ManifestBackupNotVerified
+        expr: time() - manifest_backup_last_verified_timestamp_seconds > 8 * 86400
+        labels: { severity: warning }
+        annotations:
+          summary: "No backup has been test-restored in over a week (scripts/verify-backup.sh)"
