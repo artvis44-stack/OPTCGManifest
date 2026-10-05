@@ -23,9 +23,9 @@ public static class SqliteToPostgres
                            collection and decks from before accounts existed
 
         The target must have no accounts, collections, decks or requests in it yet;
-        its catalogue and prices are replaced. Stop the server first, and keep a
-        copy of the file: the copy brings its schema up to date, as starting the
-        server on it would.
+        its catalogue and prices are replaced. Stop the server first. The file is
+        read, never written: the move works on a temporary copy of it, so it can be
+        mounted read-only into a container.
         """;
 
     /// <summary>
@@ -105,7 +105,19 @@ public static class SqliteToPostgres
             return 1;
         }
 
-        var source = new Database(paths, "sqlite://" + file);
+        // A working copy: bringing an old file's schema up to date - and SQLite's
+        // WAL mode - both write, and the original should come out of this as it
+        // went in. Any -wal beside it holds writes not yet folded into the file.
+        var work = Directory.CreateTempSubdirectory("manifest-migrate-").FullName;
+        var copy = Path.Combine(work, "manifest.db");
+        foreach (var suffix in new[] { "", "-wal", "-shm" })
+            if (File.Exists(file + suffix))
+            {
+                File.Copy(file + suffix, copy + suffix);
+                // The copy inherits the original's permissions, read-only included.
+                File.SetAttributes(copy + suffix, FileAttributes.Normal);
+            }
+        var source = new Database(paths, "sqlite://" + copy);
         var target = new Database(paths, postgres);
         if (!target.Dialect.IsPostgres)
         {
@@ -113,7 +125,7 @@ public static class SqliteToPostgres
             return 1;
         }
 
-        Console.WriteLine($"from {source.Description}");
+        Console.WriteLine($"from SQLite at {file}");
         Console.WriteLine($"  to {target.Description}");
 
         try
@@ -124,6 +136,11 @@ public static class SqliteToPostgres
         {
             Console.Error.WriteLine(e.Message);
             return 1;
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            try { Directory.Delete(work, recursive: true); } catch { /* temp; best effort */ }
         }
     }
 

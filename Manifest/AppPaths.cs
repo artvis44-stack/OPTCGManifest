@@ -16,11 +16,16 @@ public sealed class AppPaths
     public string ImgDir => Path.Combine(Root, "img-cache");
     public string DebugScans => Path.Combine(Root, "debug-scans");
 
+    /// <summary>
+    /// --root, else MANIFEST_ROOT - which is how the container image points every
+    /// subcommand at its data volume without each having to be told - else found.
+    /// </summary>
     public AppPaths(string? explicitRoot)
     {
-        Root = explicitRoot is { Length: > 0 }
-            ? Path.GetFullPath(explicitRoot)
-            : Discover();
+        var root = explicitRoot is { Length: > 0 }
+            ? explicitRoot
+            : Environment.GetEnvironmentVariable("MANIFEST_ROOT");
+        Root = root is { Length: > 0 } ? Path.GetFullPath(root) : Discover();
     }
 
     static string Discover()

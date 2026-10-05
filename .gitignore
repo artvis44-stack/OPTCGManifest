@@ -18,3 +18,7 @@ graphify-out/cache/
 
 # Hand-made backups
 *.bak
+
+# Deployment settings, with secrets in them
+.env
+backups/

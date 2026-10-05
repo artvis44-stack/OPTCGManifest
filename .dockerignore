@@ -1,0 +1,15 @@
+# Only the server source and the catalogue go into the image.
+**/bin/
+**/obj/
+Manifest.Tests/
+.git/
+.claude/
+.codex/
+graphify-out/
+img-cache/
+debug-scans/
+backups/
+*.pem
+*.bak
+manifest.db*
+.env

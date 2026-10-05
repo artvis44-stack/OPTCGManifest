@@ -1,0 +1,23 @@
+# HTTPS for MANIFEST_DOMAIN, with a certificate from Let's Encrypt fetched and
+# renewed by Caddy itself, in front of however many app containers are running.
+{$MANIFEST_DOMAIN} {
+	encode zstd gzip
+
+	# Browsers remember to use HTTPS for a year, so a later visit typed as
+	# http:// never goes over the network in the clear first.
+	header Strict-Transport-Security "max-age=31536000"
+
+	reverse_proxy {
+		# Every app replica: Docker's DNS answers "app" with each container's
+		# address, re-read every few seconds as replicas come and go.
+		dynamic a {
+			name app
+			port 8420
+			refresh 5s
+		}
+		lb_policy round_robin
+		# A replica that stops answering is skipped for a while, not retried
+		# on every request.
+		fail_duration 10s
+	}
+}

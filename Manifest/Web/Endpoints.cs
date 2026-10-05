@@ -236,7 +236,7 @@ public static class Endpoints
         {
             var (status, body) = await HealthChecks.Ready(config, database,
                 app.Services.GetService<StackExchange.Redis.IConnectionMultiplexer>(),
-                ctx.RequestAborted);
+                app.Services.GetService<IImageStore>(), ctx.RequestAborted);
             await ctx.Json(status, body);
         });
 

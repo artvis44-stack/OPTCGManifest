@@ -93,7 +93,45 @@ public sealed class S3ImageStore : IImageStore
         }
     }
 
+    /// <summary>
+    /// Asks the bucket, with the app's own key, about an object that is not there.
+    /// "Not found" is the healthy answer - the endpoint is up and the key was
+    /// accepted - where an anonymous request would be refused either way and so
+    /// could not tell a wrong key from a right one.
+    /// </summary>
+    public async Task<(bool Ok, string Detail)> Probe(CancellationToken cancel)
+    {
+        try
+        {
+            await _s3.GetObjectMetadataAsync(_bucket, "health/probe", cancel);
+            return (true, "credentials accepted");
+        }
+        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return (true, "credentials accepted");
+        }
+        catch (AmazonS3Exception e)
+        {
+            return (false, $"HTTP {(int)e.StatusCode} {e.ErrorCode}".TrimEnd());
+        }
+    }
+
     public async Task Put(string key, byte[] png, CancellationToken cancel = default)
+    {
+        try
+        {
+            await PutObject(key, png, cancel);
+        }
+        catch (AmazonS3Exception e) when (e.ErrorCode == "NoSuchBucket")
+        {
+            // A fresh local store, typically. With a hosted bucket this needs
+            // permission the key may not have, in which case the error stands.
+            await _s3.PutBucketAsync(_bucket, cancel);
+            await PutObject(key, png, cancel);
+        }
+    }
+
+    async Task PutObject(string key, byte[] png, CancellationToken cancel)
     {
         using var body = new MemoryStream(png);
         await _s3.PutObjectAsync(new PutObjectRequest

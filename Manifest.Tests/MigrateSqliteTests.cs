@@ -128,6 +128,38 @@ public sealed class MigrateSqliteTests : IDisposable
         Assert.Equal(1, new UserRepository(new Database(Paths, target)).Count());
     }
 
+    /// <summary>The source is read from a copy: the original comes out byte for byte as it went in.</summary>
+    [SkippableFact]
+    public void LeavesTheSourceFileUntouched()
+    {
+        Skip.If(ServerFixture.PostgresAdminUrl is null, "MANIFEST_TEST_POSTGRES is not set");
+
+        new UserRepository(Source()).Create("alice", "correct-horse-battery");
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        var file = Path.Combine(_root, "manifest.db");
+        // As old a file as can be: no WAL, so the move would have to change it to use one.
+        using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={file}"))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "PRAGMA journal_mode=DELETE";
+            cmd.ExecuteNonQuery();
+        }
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        var before = File.ReadAllBytes(file);
+        File.SetAttributes(file, FileAttributes.ReadOnly);
+        try
+        {
+            Assert.Equal(0, Migrate(FreshTarget()));
+            Assert.Equal(before, File.ReadAllBytes(file));
+            Assert.False(File.Exists(file + "-wal"));
+        }
+        finally
+        {
+            File.SetAttributes(file, FileAttributes.Normal);
+        }
+    }
+
     [Fact]
     public void RefusesAFileThatIsNotThere()
     {

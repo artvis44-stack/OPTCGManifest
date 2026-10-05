@@ -313,6 +313,57 @@ MANIFEST_OBJECT_STORAGE_SECRET_KEY=...
 
 Pictures are stored as `cards/<card-id>.png` and still served through the app.
 
+## Deploying to a VPS
+
+Everything is in `docker-compose.prod.yml`: Caddy (HTTPS, with a certificate from
+Let's Encrypt it fetches and renews itself) in front of two app containers, a
+worker, PostgreSQL, Redis, and a SeaweedFS store for card art. Any VPS with Docker
+and a couple of GB of memory will do.
+
+1. **DNS.** Point an A (and AAAA, if it has IPv6) record for your domain at the
+   server, and open ports 80 and 443. Caddy needs both to get the certificate.
+2. **Settings.** On the server:
+
+   ```
+   git clone <this repo> manifest && cd manifest
+   cp .env.example .env
+   ```
+
+   Fill in `MANIFEST_DOMAIN`, and give `POSTGRES_PASSWORD` and
+   `MANIFEST_OBJECT_STORAGE_SECRET_KEY` long random values (`openssl rand -hex 24`).
+   Decide how people get accounts: a `MANIFEST_INVITE_CODE` (16+ characters), the
+   request-and-approve flow (`MANIFEST_ADMIN_EMAIL` plus SMTP), or neither.
+3. **Your existing collection** (skip for a fresh start). Copy `manifest.db` to the
+   server, then, before anyone signs in on the new site:
+
+   ```
+   docker compose -f docker-compose.prod.yml up -d postgres
+   docker compose -f docker-compose.prod.yml run --rm \
+     -v ./manifest.db:/import/manifest.db:ro app migrate-sqlite --sqlite /import/manifest.db
+   ```
+
+   Your account, password, collection, decks and history come across as they are,
+   and the file itself is not changed.
+4. **Start it.**
+
+   ```
+   docker compose -f docker-compose.prod.yml up -d --build
+   ```
+
+   `https://<your domain>/api/health/ready` should show every check as `ok`. With
+   neither invite code nor migration, make the first account on the server:
+   `docker compose -f docker-compose.prod.yml exec app manifest-entrypoint user add <name>`.
+5. **Backups.** `scripts/backup-postgres.sh` dumps the database to `backups/` and
+   keeps two weeks of them; its header has the cron line and the restore steps.
+   Copy `backups/` somewhere off the server too.
+
+To update: `git pull && docker compose -f docker-compose.prod.yml up -d --build`.
+Migrations run as the new containers start. `APP_REPLICAS` and `WORKER_REPLICAS`
+in `.env` set how many of each run.
+
+`docker compose up --build` (the plain `docker-compose.yml`) runs the same stack on
+your own machine at http://localhost:8420, without Caddy or a domain.
+
 ## Tests
 
 ```
@@ -356,6 +407,8 @@ if OpenSSL is missing. Cleans up after itself.
 | `make_cert.sh` | certificate authority and server certificate for the camera |
 | `ca.pem`, `cert.pem`, `key.pem` | created by `make_cert.sh`; keep the keys private |
 | `Manifest.Tests/` | test suite |
+| `Dockerfile`, `docker-compose*.yml`, `docker/`, `.env.example` | the container image and the two stacks |
+| `scripts/backup-postgres.sh` | nightly database dumps |
 | `manifest.db` | your collection — created on first run |
 | `img-cache/` | card pictures, downloaded as you view them |
 

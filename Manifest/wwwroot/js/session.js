@@ -2,19 +2,20 @@
    handling every card picture shares. Loaded last, once everything it calls exists. */
 
 // Card art still being fetched answers 404 with Retry-After, so a picture that
-// fails is asked for again a couple of times before its frame is given up on.
-// One listener for every <img>, in place of an onerror="" on each, which the
-// page's Content-Security-Policy would refuse to run.
+// fails is asked for again - a little later each time, for about half a minute,
+// which covers a worker working through a screenful of new art - before its frame
+// is given up on. One listener for every <img>, in place of an onerror="" on each,
+// which the page's Content-Security-Policy would refuse to run.
 document.addEventListener('error', e => {
   const img = e.target;
   if (!(img instanceof HTMLImageElement)) return;
   img.style.visibility = 'hidden';
-  const src = img.getAttribute('src') || '';
+  // The path, not the attribute: after the first retry src is a full URL.
+  const url = new URL(img.src || '', location.href);
   const tries = Number(img.dataset.tries || 0);
-  if (tries >= 3 || !/^\/img\/./.test(src)) return;
+  if (tries >= 6 || !/^\/img\/./.test(url.pathname)) return;
   img.dataset.tries = tries + 1;
   setTimeout(() => {
-    const url = new URL(img.src);
     url.searchParams.set('try', tries + 1);
     img.src = url.toString();
   }, 1500 * (tries + 1));

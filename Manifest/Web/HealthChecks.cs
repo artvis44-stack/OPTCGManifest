@@ -1,4 +1,5 @@
 using Manifest.Data;
+using Manifest.Services;
 using StackExchange.Redis;
 
 namespace Manifest.Web;
@@ -15,13 +16,13 @@ public static class HealthChecks
 
     public static async Task<(int Status, ReadyResponse Body)> Ready(
         AppConfig config, Database database, IConnectionMultiplexer? redis,
-        CancellationToken cancel)
+        IImageStore? images, CancellationToken cancel)
     {
         var checks = new Dictionary<string, Component>(StringComparer.OrdinalIgnoreCase)
         {
             ["database"] = DatabaseCheck(database),
             ["redis"] = await Redis(config, redis),
-            ["object_storage"] = await ObjectStorage(config, cancel),
+            ["object_storage"] = await ObjectStorage(config, images, cancel),
         };
 
         checks["worker_queue"] = WorkerQueue(config, checks);
@@ -71,28 +72,22 @@ public static class HealthChecks
         }
     }
 
-    static async Task<Component> ObjectStorage(AppConfig config, CancellationToken cancel)
+    static async Task<Component> ObjectStorage(AppConfig config, IImageStore? images,
+                                               CancellationToken cancel)
     {
-        if (!config.ObjectStorageConfigured)
+        if (!config.ObjectStorageConfigured || images is not S3ImageStore s3)
             return new Component("not_configured");
 
-        if (!Uri.TryCreate(config.ObjectStorageEndpoint, UriKind.Absolute, out var endpoint))
-            return new Component("fail", "MANIFEST_OBJECT_STORAGE_ENDPOINT is not a valid URL");
-
-        var bucket = Uri.EscapeDataString(config.ObjectStorageBucket!);
-        var bucketUri = new Uri(endpoint.ToString().TrimEnd('/') + "/" + bucket + "/");
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-        using var request = new HttpRequestMessage(HttpMethod.Head, bucketUri);
-
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+        timeout.CancelAfter(TimeSpan.FromSeconds(3));
         try
         {
-            using var response = await http.SendAsync(request, cancel);
-            return (int)response.StatusCode < 500
-                ? new Component("ok", $"HTTP {(int)response.StatusCode}")
-                : new Component("fail", $"HTTP {(int)response.StatusCode}");
+            var (ok, detail) = await s3.Probe(timeout.Token);
+            return new Component(ok ? "ok" : "fail", detail);
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException
-                                     or OperationCanceledException)
+        catch (Exception e) when (e is HttpRequestException or OperationCanceledException
+                                     or Amazon.Runtime.AmazonServiceException
+                                     or Amazon.Runtime.AmazonClientException)
         {
             return new Component("fail", $"{e.GetType().Name}: {e.Message}");
         }
