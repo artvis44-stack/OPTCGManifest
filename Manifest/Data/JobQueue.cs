@@ -205,6 +205,43 @@ public sealed class JobQueue
         return r.Read() ? Read(r) : null;
     }
 
+    /// <summary>The newest job of a type, and when it was queued and last touched.</summary>
+    public sealed record Recent(Job Job, string? CreatedAt, string? UpdatedAt);
+
+    /// <summary>
+    /// The newest job of <paramref name="type"/>, whoever queued it - the schedule or
+    /// the admin page - for showing when it last ran and how that went.
+    /// </summary>
+    public Recent? Latest(string type)
+    {
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, type, payload, status, attempts, max_attempts, correlation_id,
+                   user_id, result, last_error, created_at, updated_at
+            FROM jobs WHERE type = @type ORDER BY id DESC LIMIT 1
+            """;
+        cmd.Bind("@type", type);
+        using var r = cmd.ExecuteReader();
+        return r.Read() ? new Recent(Read(r), r.Str("created_at"), r.Str("updated_at")) : null;
+    }
+
+    /// <summary>
+    /// A job of this type waiting or under way, from any source. Asking for another
+    /// then would only run the same work twice, side by side.
+    /// </summary>
+    public long? LiveOfType(string type)
+    {
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id FROM jobs WHERE type = @type AND status IN ('queued', 'running')
+            ORDER BY id DESC LIMIT 1
+            """;
+        cmd.Bind("@type", type);
+        return cmd.ExecuteScalar() is { } found and not DBNull ? Convert.ToInt64(found) : null;
+    }
+
     /// <summary>How deep the queue is, for the readiness check.</summary>
     public (long Queued, long Running, long Failed) Depth()
     {

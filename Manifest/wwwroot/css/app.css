@@ -106,6 +106,10 @@ nav button:focus-visible{outline:2px solid var(--foam);outline-offset:2px}
   border-radius:999px;padding:5px 11px;font-size:10px;letter-spacing:.13em;
   text-transform:uppercase;cursor:pointer;font-family:var(--sans)}
 .who button:hover{border-color:var(--red);color:var(--red-hi)}
+.who a{border:1px solid var(--edge);color:var(--gold);border-radius:999px;padding:5px 11px;
+  font-size:10px;letter-spacing:.13em;text-transform:uppercase;text-decoration:none}
+.who a:hover{border-color:var(--gold)}
+.who a[hidden]{display:none}
 .who[hidden]{display:none}
 
 /* ══ shell: content + card inspector ══ */

@@ -30,6 +30,11 @@ document.addEventListener('load', e => {
   const s = await api('/api/session');
   if (!s.authenticated) { location.reload(); return; }
   $('#whoName').textContent = s.user.username;
+  // The owner keeps the card data current and decides access requests, both on /admin.
+  if (s.user.owner) {
+    $('#adminLink').hidden = false;
+    if (s.pending_requests) $('#adminLink').textContent = `Admin (${s.pending_requests})`;
+  }
   $('#who').hidden = false;
   $('#signOut').addEventListener('click', async () => {
     await fetch('/api/auth/logout', {

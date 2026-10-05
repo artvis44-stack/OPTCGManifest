@@ -68,6 +68,7 @@ public static class ServiceSetup
         services.AddSingleton<IJobHandler, PurgeJobsHandler>();
         services.AddSingleton<IJobHandler, RefreshPricesHandler>();
         services.AddSingleton<IJobHandler, RefreshCatalogHandler>();
+        services.AddSingleton<IJobHandler, ScrapeCatalogHandler>();
         return services;
     }
 }
