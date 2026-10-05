@@ -54,6 +54,13 @@ public sealed class ImageCache : IJobHandler
 
     public async Task<Result> Get(string rawCardId, string? correlationId = null)
     {
+        var result = await Lookup(rawCardId, correlationId);
+        Telemetry.ImageRequest(result.State.ToString().ToLowerInvariant());
+        return result;
+    }
+
+    async Task<Result> Lookup(string rawCardId, string? correlationId)
+    {
         var cid = CardId.Normalise(rawCardId);
         if (cid is null || CardId.SafeFileStem(cid).Length == 0) return new Result(State.Missing);
 
@@ -105,6 +112,7 @@ public sealed class ImageCache : IJobHandler
         if (await _store.Get(key, cancel) is not null)
         {
             Record(cid, "stored", null, key, null);
+            Telemetry.ImageFetch("already");
             return new { stored = key, already = true };
         }
 
@@ -116,7 +124,11 @@ public sealed class ImageCache : IJobHandler
             cmd.Bind("@id", cid);
             url = cmd.ExecuteScalar() as string;
         }
-        if (string.IsNullOrEmpty(url)) return new { missing = cid };
+        if (string.IsNullOrEmpty(url))
+        {
+            Telemetry.ImageFetch("missing");
+            return new { missing = cid };
+        }
 
         try
         {
@@ -125,12 +137,14 @@ public sealed class ImageCache : IJobHandler
                 throw new InvalidDataException("upstream did not send a PNG");
             await _store.Put(key, blob, cancel);
             Record(cid, "stored", url, key, null);
+            Telemetry.ImageFetch("stored");
             return new { stored = key, bytes = blob.Length };
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException
                                      or InvalidDataException && !cancel.IsCancellationRequested)
         {
             Record(cid, "failed", url, null, $"{e.GetType().Name}: {e.Message}");
+            Telemetry.ImageFetch("failed");
             return new { failed = cid, error = e.Message };
         }
     }

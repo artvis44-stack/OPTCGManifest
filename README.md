@@ -354,8 +354,14 @@ and a couple of GB of memory will do.
    neither invite code nor migration, make the first account on the server:
    `docker compose -f docker-compose.prod.yml exec app manifest-entrypoint user add <name>`.
 5. **Backups.** `scripts/backup-postgres.sh` dumps the database to `backups/` and
-   keeps two weeks of them; its header has the cron line and the restore steps.
-   Copy `backups/` somewhere off the server too.
+   keeps two weeks of them; `scripts/verify-backup.sh` test-restores the newest
+   one. Cron lines, the off-site copy and the restore steps are in
+   [docs/OPERATIONS.md](docs/OPERATIONS.md).
+6. **Monitoring and launch.** `--profile monitoring` adds Prometheus, Alertmanager
+   and a host exporter with alert rules for errors, latency, the job queue, disk
+   and backups. Before opening the site up, go through
+   [docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md), including a load test
+   (`loadtest/run.sh`) against a staging copy.
 
 To update: `git pull && docker compose -f docker-compose.prod.yml up -d --build`.
 Migrations run as the new containers start. `APP_REPLICAS` and `WORKER_REPLICAS`
@@ -408,7 +414,10 @@ if OpenSSL is missing. Cleans up after itself.
 | `ca.pem`, `cert.pem`, `key.pem` | created by `make_cert.sh`; keep the keys private |
 | `Manifest.Tests/` | test suite |
 | `Dockerfile`, `docker-compose*.yml`, `docker/`, `.env.example` | the container image and the two stacks |
-| `scripts/backup-postgres.sh` | nightly database dumps |
+| `scripts/backup-postgres.sh`, `scripts/verify-backup.sh` | nightly database dumps, and a test restore of one |
+| `docker/prometheus*.yml`, `docker/alerts.yml`, `docker/alertmanager.sh` | the monitoring profile and its alert rules |
+| `loadtest/` | the k6 load test for the launch target, and `run.sh` to run it from Docker |
+| `docs/` | `OPERATIONS.md` (metrics, alerts, backups, load tests) and `LAUNCH_CHECKLIST.md` |
 | `manifest.db` | your collection — created on first run |
 | `img-cache/` | card pictures, downloaded as you view them |
 

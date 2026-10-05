@@ -44,7 +44,7 @@ so running from the repository root just works.
 dotnet test Manifest.Tests
 ```
 
-85 tests. Most boot the real binary against a scratch database seeded from
+177 tests. Most boot the real binary against a scratch database seeded from
 `catalog.json` and drive it over HTTP, so they exercise routing, the guards and
 serialisation rather than calling the repositories directly. The TLS tests shell out
 to `make_cert.sh` and skip themselves if `openssl` is missing.
@@ -58,8 +58,9 @@ to `make_cert.sh` and skip themselves if `openssl` is missing.
 | `Web/Guard.cs` | Host / Origin / content-type / body-size refusals |
 | `Web/Endpoints.cs` | every route |
 | `Web/SetupHelper.cs` | the plain-http certificate-install listener |
+| `Web/MetricsServer.cs` | the internal-only `/metrics` listener (`MANIFEST_METRICS_LISTEN`), in the site and the worker |
 | `Data/` | connection handling, schema, card and deck repositories; `SqlDialect` holds the few SQLite/PostgreSQL differences, `Migrations/Postgres/` the versioned PostgreSQL schema |
-| `Services/` | card-id parsing, deck analysis, the image store and cache, the scanners, `ServiceSetup` (everything registered once for web and worker) |
+| `Services/` | card-id parsing, deck analysis, the image store and cache, the scanners, `ServiceSetup` (everything registered once for web and worker), `Telemetry` (the metrics) and `PrometheusExporter` |
 | `Services/Jobs/` | the job worker, its schedule, the handlers and the mail outbox; the queue itself is `Data/JobQueue.cs` |
 | `WorkerHost.cs` | `manifest worker` and `manifest enqueue` |
 | `wwwroot/` | the front end, embedded and served by `Web/WebAssets.cs` under a strict CSP (`Web/SecurityHeaders.cs`) |

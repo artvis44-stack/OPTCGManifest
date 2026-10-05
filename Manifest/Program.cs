@@ -111,6 +111,8 @@ app.Use(async (ctx, next) =>
         finally
         {
             var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            Telemetry.Request(ctx.Request.Method, RouteLabel(ctx), ctx.Response.StatusCode,
+                              elapsed / 1000);
             requestLogger.LogInformation(
                 "HTTP {Method} {Path} responded {StatusCode} in {ElapsedMs:0.0} ms "
                 + "request_id={RequestId} user_id={UserId}",
@@ -157,6 +159,9 @@ sessions.PurgeExpiredSessions();
 var accounts = app.Services.GetRequiredService<IUserRepository>();
 var requests = app.Services.GetRequiredService<IAccessRepository>();
 requests.PurgeExpiredTokens();
+
+var metrics = await MetricsServer.Start(config, app.Services.GetRequiredService<JobQueue>(),
+                                        requestLogger);
 
 var scheme = config.Https ? "https" : "http";
 var ip = Net.LanIp();
@@ -246,6 +251,9 @@ else
                           + "use whatever Host the request carried");
 }
 
+if (metrics is not null && config.MetricsEndpoint is { } metricsAt)
+    Console.WriteLine($"  Metrics      : {MetricsServer.Describe(metricsAt)}");
+
 if (TesseractScanner.Binary is { } binary)
     Console.WriteLine($"  Scanning     : on, local OCR ({binary})");
 else if (AppConfig.ApiKey is not null)
@@ -272,10 +280,19 @@ Console.WriteLine("  Ctrl-C to stop.\n");
 
 await app.RunAsync();
 if (helper is not null) await helper.StopAsync();
+if (metrics is not null) await metrics.StopAsync();
 Console.WriteLine(database.SqliteFile is { } file
     ? $"\n  Stopped. Counts are saved in {Path.GetFileName(file)}"
     : "\n  Stopped. Counts are saved in PostgreSQL");
 return 0;
+
+// The route's template rather than the path, so /api/decks/17 and /api/decks/18
+// are one series and a scanner walking random URLs cannot mint new ones.
+static string RouteLabel(HttpContext ctx) =>
+    ctx.GetEndpoint() is RouteEndpoint { RoutePattern.RawText: { } pattern }
+    && !pattern.StartsWith("{*", StringComparison.Ordinal)
+        ? (pattern.StartsWith('/') ? pattern : "/" + pattern)
+        : "unmatched";
 
 static string? RequestId(string? value)
 {

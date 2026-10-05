@@ -96,6 +96,7 @@ public sealed class JobWorker : BackgroundService
         {
             _log.LogError("job {JobId}: no handler for {Type}", job.Id, job.Type);
             _queue.Fail(job with { Attempts = job.MaxAttempts }, $"no handler for {job.Type}");
+            Telemetry.JobFinished(job.Type, "failed", 0);
             return;
         }
 
@@ -104,6 +105,7 @@ public sealed class JobWorker : BackgroundService
         {
             var result = await handler.Run(job, stop);
             _queue.Complete(job.Id, result, handler.ForgetPayload);
+            Telemetry.JobFinished(job.Type, "done", (DateTime.UtcNow - started).TotalSeconds);
             _log.LogInformation("job {JobId} {Type} done in {Ms:0} ms correlation_id={CorrelationId}",
                                 job.Id, job.Type, (DateTime.UtcNow - started).TotalMilliseconds,
                                 job.CorrelationId);
@@ -118,6 +120,8 @@ public sealed class JobWorker : BackgroundService
             _log.LogWarning(e, "job {JobId} {Type} failed (attempt {Attempt} of {Max}) correlation_id={CorrelationId}",
                             job.Id, job.Type, job.Attempts, job.MaxAttempts, job.CorrelationId);
             _queue.Fail(job, $"{e.GetType().Name}: {e.Message}", forget: handler.ForgetPayload);
+            Telemetry.JobFinished(job.Type, job.Attempts >= job.MaxAttempts ? "failed" : "retry",
+                                  (DateTime.UtcNow - started).TotalSeconds);
         }
     }
 }

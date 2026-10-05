@@ -5,7 +5,13 @@
 #   docker compose -f docker-compose.prod.yml up -d --build
 #
 # Only Caddy is reachable from outside; everything else talks on the compose
-# network. To use a hosted bucket (R2, B2, S3) instead of the s3 service, set
+# network. Monitoring - Prometheus, Alertmanager and a host exporter, with the
+# alert rules in docker/alerts.yml - is opt-in:
+#
+#   docker compose -f docker-compose.prod.yml --profile monitoring up -d
+#
+# Its UIs listen on the server's loopback only; reach them over SSH:
+#   ssh -L 9090:127.0.0.1:9090 -L 9093:127.0.0.1:9093 <server> To use a hosted bucket (R2, B2, S3) instead of the s3 service, set
 # the MANIFEST_OBJECT_STORAGE_* variables in .env and remove the s3 service.
 
 x-manifest: &manifest
@@ -23,6 +29,8 @@ x-manifest: &manifest
     MANIFEST_OBJECT_STORAGE_SECRET_KEY: ${MANIFEST_OBJECT_STORAGE_SECRET_KEY:?set MANIFEST_OBJECT_STORAGE_SECRET_KEY in .env}
     MANIFEST_PUBLIC_URL: https://${MANIFEST_DOMAIN:?set MANIFEST_DOMAIN in .env}
     MANIFEST_WORKER_MODE: external
+    # /metrics for Prometheus, on the compose network only: Caddy forwards 8420.
+    MANIFEST_METRICS_LISTEN: 0.0.0.0:9464
   depends_on:
     postgres: { condition: service_healthy }
     redis: { condition: service_started }
@@ -96,6 +104,57 @@ services:
       - ./docker/seaweedfs.sh:/seaweedfs.sh:ro,Z
       - s3-data:/data
 
+  # ---- monitoring (profile) ----------------------------------------------
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro,Z
+      - ./docker/alerts.yml:/etc/prometheus/alerts.yml:ro,Z
+      - prom-data:/prometheus
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    profiles: [monitoring]
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/alertmanager.sh"]
+    # Mails alerts to MANIFEST_ALERT_EMAIL through the same SMTP settings the
+    # app uses. Unset, alerts only show at http://127.0.0.1:9093.
+    environment:
+      MANIFEST_ALERT_EMAIL: ${MANIFEST_ALERT_EMAIL:-}
+      MANIFEST_SMTP_HOST: ${MANIFEST_SMTP_HOST:-}
+      MANIFEST_SMTP_PORT: ${MANIFEST_SMTP_PORT:-587}
+      MANIFEST_SMTP_USER: ${MANIFEST_SMTP_USER:-}
+      MANIFEST_SMTP_PASSWORD: ${MANIFEST_SMTP_PASSWORD:-}
+      MANIFEST_SMTP_FROM: ${MANIFEST_SMTP_FROM:-}
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - ./docker/alertmanager.sh:/alertmanager.sh:ro,Z
+      - am-data:/alertmanager
+
+  # Disk, memory and CPU of the VPS itself, plus the backup scripts' results:
+  # they write *.prom files into backups/, read here as textfile metrics.
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    profiles: [monitoring]
+    restart: unless-stopped
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --collector.textfile.directory=/textfile
+    volumes:
+      - /:/host:ro,rslave
+      - ./backups:/textfile:ro,z
+
 volumes:
   caddy-data:
   caddy-config:
@@ -103,3 +162,5 @@ volumes:
   worker-data:
   pg-data:
   s3-data:
+  prom-data:
+  am-data:
