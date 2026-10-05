@@ -32,7 +32,6 @@ public sealed class ImageCache : IJobHandler
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         _http.DefaultRequestHeaders.Add(
             "User-Agent", "Mozilla/5.0 (Manifest, self-hosted collection tracker)");
-        _http.DefaultRequestHeaders.Add("Referer", "https://en.onepiece-cardgame.com/cardlist/");
         _http.DefaultRequestHeaders.Add("Accept", "image/png,image/*;q=0.8,*/*;q=0.5");
     }
 
@@ -132,7 +131,12 @@ public sealed class ImageCache : IJobHandler
 
         try
         {
-            var blob = await _http.GetByteArrayAsync(url, cancel);
+            // The card list on the image's own site - English or Japanese - as the referrer.
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Referrer = new Uri(new Uri(url), "/cardlist/");
+            using var response = await _http.SendAsync(request, cancel);
+            response.EnsureSuccessStatusCode();
+            var blob = await response.Content.ReadAsByteArrayAsync(cancel);
             if (blob.Length < 4 || !blob.Take(4).SequenceEqual(PngMagic))
                 throw new InvalidDataException("upstream did not send a PNG");
             await _store.Put(key, blob, cancel);

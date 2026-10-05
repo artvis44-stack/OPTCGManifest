@@ -32,6 +32,7 @@ The catalogue and price jobs are subcommands of the same binary:
 | `manifest refresh-prices` | pull market prices into the database, converted to GBP |
 | `manifest scrape --list` | list the sets on the official card site |
 | `manifest scrape` | rebuild `catalog.json` from the official card site |
+| `manifest scrape --lang jp` | the Japanese site's prints into `catalog-jp.json`; the reseed files them as further printings (`OP01-016_jp`) of the same card numbers |
 | `manifest --reseed` | reload the database's catalogue from `catalog.json` |
 
 `--root PATH` points the app at the directory holding `manifest.db`, `catalog.json`

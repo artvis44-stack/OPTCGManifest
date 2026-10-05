@@ -1,6 +1,7 @@
 using System.Data.Common;
 using System.Text.Json;
 using Manifest.Models;
+using Manifest.Services;
 using Microsoft.Data.Sqlite;
 using Npgsql;
 
@@ -501,6 +502,15 @@ public sealed class Database
         List<CatalogRow> rows;
         using (var stream = File.OpenRead(_paths.Catalog))
             rows = JsonSerializer.Deserialize<List<CatalogRow>>(stream, Json.Options) ?? new();
+
+        // Japanese prints, when the site has been scraped for them, are seeded as
+        // further printings of the same card numbers.
+        if (File.Exists(_paths.CatalogJapanese))
+        {
+            using var stream = File.OpenRead(_paths.CatalogJapanese);
+            var jp = JsonSerializer.Deserialize<List<CatalogRow>>(stream, Json.Options) ?? new();
+            rows.AddRange(JapanesePrints.FromScrape(rows, jp));
+        }
 
         conn.Exec("DELETE FROM catalog");
 

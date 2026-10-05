@@ -95,10 +95,18 @@ public sealed class ScrapeCatalogHandler(AppPaths paths, Database db, JobQueue q
         if (await CatalogScraper.ScrapeNew(paths) is not { } outcome)
             throw new InvalidOperationException(
                 "could not read the official card site; see the worker log");
+        // The Japanese site is a bonus: if it cannot be read, the English sets
+        // still go in, and its last good scrape stays as it was.
+        var japanese = await CatalogScraper.ScrapeNew(paths, CatalogScraper.Japanese);
         if (db.Initialise(forceReseed: true) is { } error)
             throw new InvalidOperationException(error);
         if (outcome.Added > 0)
             queue.Enqueue(JobTypes.RefreshPrices, new { }, dedupeKey: "after-scrape:" + JobTypes.RefreshPrices);
-        return new { added = outcome.Added, printings = outcome.Printings, sets = outcome.Fetched };
+        return new
+        {
+            added = outcome.Added, printings = outcome.Printings, sets = outcome.Fetched,
+            japanese = japanese is null ? null
+                : new { added = japanese.Added, printings = japanese.Printings, sets = japanese.Fetched },
+        };
     }
 }
