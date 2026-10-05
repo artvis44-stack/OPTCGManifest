@@ -1,4 +1,5 @@
 using Manifest.Data;
+using Manifest.Services;
 using Npgsql;
 
 namespace Manifest.Tests;
@@ -47,6 +48,44 @@ public class DatabaseUrlTests
     [InlineData("manifest.db")]
     [InlineData("postgres://u:p@localhost/")]
     public void RejectsEverythingElse(string url) => Assert.NotNull(Database.RejectUrl(url));
+
+    [Theory]
+    [InlineData("sqlite://manifest.db")]
+    [InlineData("sqlite:///data/manifest.db")]
+    [InlineData("mysql://u:p@localhost/manifest")]
+    public void ProductionRefusesAnythingButPostgres(string url)
+    {
+        var config = new AppConfig { EnvironmentName = "Production", DatabaseUrl = url };
+        Assert.NotNull(config.ProductionDatabaseError());
+    }
+
+    [Fact]
+    public void ProductionStartupNamesTheMissingDatabase()
+    {
+        var config = new AppConfig { EnvironmentName = "Production", DatabaseUrl = "sqlite://manifest.db" };
+        Assert.Contains(config.ValidateForStartup(new MailSettings()),
+                        e => e.Contains("Production needs PostgreSQL"));
+    }
+
+    [Theory]
+    [InlineData("postgres://u:p@localhost/manifest")]
+    [InlineData("Host=localhost;Database=manifest;Username=u")]
+    public void ProductionAcceptsPostgres(string url)
+    {
+        var config = new AppConfig { EnvironmentName = "Production", DatabaseUrl = url };
+        Assert.Null(config.ProductionDatabaseError());
+        Assert.DoesNotContain(config.ValidateForStartup(new MailSettings()),
+                              e => e.Contains("PostgreSQL"));
+    }
+
+    [Fact]
+    public void DevelopmentKeepsSqlite()
+    {
+        var config = new AppConfig { EnvironmentName = "Development", DatabaseUrl = "sqlite://manifest.db" };
+        Assert.Null(config.ProductionDatabaseError());
+        Assert.DoesNotContain(config.ValidateForStartup(new MailSettings()),
+                              e => e.Contains("PostgreSQL"));
+    }
 
     [SkippableFact]
     public async Task MigrationsApplyOnceWhenContainersStartTogether()

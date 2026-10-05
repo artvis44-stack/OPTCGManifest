@@ -245,7 +245,9 @@ MANIFEST_DATABASE_URL=postgres://user:pass@host:5432/manifest?sslmode=require \
 
 The schema is created and kept current by the numbered scripts in
 `Manifest/Data/Migrations/Postgres/`, applied on startup under a lock so several
-containers can start at once. Unset, it stays `sqlite://manifest.db`.
+containers can start at once. Unset, it stays `sqlite://manifest.db` - but only
+in Development: with `MANIFEST_ENV=Production` (the container image's default) the
+server and worker refuse to start on anything but PostgreSQL.
 
 To move an existing collection across, stop the server, keep a copy of
 `manifest.db`, and point the copy at an empty PostgreSQL database:

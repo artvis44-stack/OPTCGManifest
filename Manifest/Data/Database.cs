@@ -57,6 +57,19 @@ public sealed class Database
     /// <summary>The database file, or null when the data lives in PostgreSQL.</summary>
     public string? SqliteFile { get; }
 
+    /// <summary>
+    /// Whether <paramref name="url"/> names PostgreSQL. False for SQLite and for
+    /// anything unreadable, which RejectUrl reports on its own.
+    /// </summary>
+    public static bool IsPostgresUrl(string url)
+    {
+        try { return ParsePostgres(url) is not null; }
+        catch (Exception e) when (e is ArgumentException or FormatException or UriFormatException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Whether <paramref name="url"/> is one this class knows how to open.</summary>
     public static string? RejectUrl(string url)
     {
