@@ -92,3 +92,29 @@ public sealed class AccessDecisionPost
     public string? Token { get; set; }
     public string? Decision { get; set; }
 }
+
+public sealed class BinderPost
+{
+    public string? Name { get; set; }
+
+    /// <summary>On create: move everything in your own binder into the new one.</summary>
+    public bool MoveMine { get; set; }
+}
+
+public sealed class MemberPost
+{
+    public string? Username { get; set; }
+}
+
+public sealed class VisibilityPost
+{
+    public bool Visible { get; set; }
+}
+
+public sealed class MovePost
+{
+    public string? CardId { get; set; }
+    public long From { get; set; }
+    public long To { get; set; }
+    [JsonConverter(typeof(LenientIntConverter))] public int? Qty { get; set; }
+}

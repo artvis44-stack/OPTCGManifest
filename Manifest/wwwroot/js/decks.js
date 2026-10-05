@@ -74,7 +74,7 @@ const leaderPager = makePager({
     const params = new URLSearchParams({q: $('#qLeader').value.trim(), category: 'Leader', cursor});
     if ($('#fColorLeader').value) params.set('colors', $('#fColorLeader').value);
     if ($('#fOwnedLeader').value) params.set('owned', $('#fOwnedLeader').value);  // '1' owned, '0' not
-    return '/api/search?' + params.toString();
+    return '/api/search?binder=all&' + params.toString();
   },
   paint: (items, append) => {
     const host = $('#leaderResults');
@@ -153,7 +153,7 @@ function renderDeckHead() {
     </div>` : '';
   if (!leader) return;
   $('#deckLeaderImg').onclick = async () => {
-    const r = await api('/api/card/' + encodeURIComponent(leader.card_id));
+    const r = await api('/api/card/' + encodeURIComponent(leader.card_id) + '?binder=all');
     if (r.card) openCardModal(r.card);
   };
   const nameInput = $('#deckNameInput');
@@ -283,7 +283,7 @@ async function loadPreview(cardId) {
   const mine = previewAbort;
   let data;
   try {
-    data = await api('/api/card/' + encodeURIComponent(cardId), {signal: mine.signal});
+    data = await api('/api/card/' + encodeURIComponent(cardId) + '?binder=all', {signal: mine.signal});
   } catch (e) {
     if (e.name === 'AbortError') return;
     throw e;
@@ -386,7 +386,7 @@ const deckBrowsePager = makePager({
     if ($('#fSetDeck').value) params.set('set', $('#fSetDeck').value);
     if ($('#fRarityDeck').value) params.set('rarity', $('#fRarityDeck').value);
     if ($('#fOwnedDeck').value) params.set('owned', $('#fOwnedDeck').value);
-    return '/api/search?' + params.toString();
+    return '/api/search?binder=all&' + params.toString();
   },
   paint: (items, append) => {
     const host = $('#deckBrowseGrid');

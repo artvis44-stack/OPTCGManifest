@@ -230,14 +230,36 @@ public sealed class Database
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
+        -- Every account has a personal binder; shared binders have several members.
+        -- See Migrations/Postgres/0003_binders.sql.
+        CREATE TABLE IF NOT EXISTS binders (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL,
+            kind       TEXT NOT NULL CHECK (kind IN ('personal', 'shared')),
+            owner_id   INTEGER,
+            visible    INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_binders_personal
+            ON binders(owner_id) WHERE kind = 'personal';
+
+        CREATE TABLE IF NOT EXISTS binder_members (
+            binder_id INTEGER NOT NULL REFERENCES binders(id) ON DELETE CASCADE,
+            user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            added_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (binder_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_binder_members_user ON binder_members(user_id);
+
         CREATE TABLE IF NOT EXISTS collection (
-            user_id   INTEGER NOT NULL,
+            binder_id INTEGER NOT NULL,
             card_id   TEXT NOT NULL,
             qty       INTEGER NOT NULL CHECK (qty >= 0),
             note      TEXT NOT NULL DEFAULT '',
             added_at  TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            PRIMARY KEY (user_id, card_id)
+            added_by  INTEGER,
+            PRIMARY KEY (binder_id, card_id)
         );
 
         CREATE TABLE IF NOT EXISTS scan_log (
@@ -310,8 +332,8 @@ public sealed class Database
         """;
 
     /// <summary>
-    /// The user_id a row carries when it predates accounts. The first account
-    /// created claims it - see UserRepository.Create. Rows are left with this owner
+    /// The user_id (or, in the collection, binder_id) a row carries when it
+    /// predates accounts. The first account created claims it - see UserRepository.Create. Rows are left with this owner
     /// rather than deleted, because a database made before accounts existed holds a
     /// collection someone spent real evenings typing in.
     /// </summary>
@@ -324,7 +346,7 @@ public sealed class Database
     /// </summary>
     static void Migrate(SqliteConnection conn)
     {
-        if (!HasColumn(conn, "collection", "user_id"))
+        if (!HasColumn(conn, "collection", "user_id") && !HasColumn(conn, "collection", "binder_id"))
         {
             // SQLite cannot widen a primary key in place, so the table is rebuilt.
             // No foreign key to users(id): these rows exist before any account does,
@@ -367,6 +389,25 @@ public sealed class Database
         {
             Exec(conn, "ALTER TABLE users ADD COLUMN email TEXT COLLATE NOCASE");
             Console.WriteLine("migrated: accounts can carry an email address");
+        }
+
+        // Collections move from accounts into binders. Each account's personal
+        // binder takes the account's id, so its rows need only the column renamed;
+        // rows still at 0 are unclaimed and stay so.
+        if (HasColumn(conn, "collection", "user_id"))
+        {
+            using var tx = conn.BeginTransaction();
+            Exec(conn, """
+                INSERT INTO binders (id, name, kind, owner_id)
+                    SELECT id, 'Mine', 'personal', id FROM users;
+                INSERT INTO binder_members (binder_id, user_id)
+                    SELECT id, id FROM users;
+                ALTER TABLE collection RENAME COLUMN user_id TO binder_id;
+                ALTER TABLE collection ADD COLUMN added_by INTEGER;
+                UPDATE collection SET added_by = binder_id WHERE binder_id <> 0;
+                """);
+            tx.Commit();
+            Console.WriteLine("migrated: collections now live in binders");
         }
 
         // Builds from before job priorities made the table without the column.

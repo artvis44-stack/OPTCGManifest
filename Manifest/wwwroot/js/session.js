@@ -60,6 +60,10 @@ document.addEventListener('load', e => {
   if (!h.scanning) $('#finderMsg').innerHTML =
     'Scanning needs tesseract installed on the machine running this. ' +
     'See the README. Typing a number always works.';
-  refreshTotals().catch(()=>{});
+  // The binder decides what every count means, so it is settled before any are drawn.
+  // switchBinder redraws the totals, and anything opened before this landed.
+  await loadBinders().catch(()=>{});
+  if (BINDER !== null) switchBinder(BINDER);
+  else refreshTotals().catch(()=>{});
   $('#q').focus();
 })().catch(()=>{});

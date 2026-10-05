@@ -1,11 +1,23 @@
 /* Manifest: the fetch wrapper and the few globals every other script uses.
    The scripts share one global scope and load in this order:
-   api, cards, collection, decks, scan, session. */
+   api, cards, collection, binders, decks, scan, session. */
 
 const $ = s => document.querySelector(s);
+
+// The binder being looked at and logged into: an id, 'all' for every binder you
+// are in added together, or null for the server's default - your own. Every
+// collection route takes it as ?binder=, so it is added here rather than at each
+// call; a call that names its own binder (the deck builder asks for 'all') keeps it.
+let BINDER = null;
+const SCOPED = /^\/api\/(collection|stats|search|card\/|reset|export\.csv)/;
+function scoped(p) {
+  if (BINDER === null || !SCOPED.test(p) || /[?&]binder=/.test(p)) return p;
+  return p + (p.includes('?') ? '&' : '?') + 'binder=' + encodeURIComponent(BINDER);
+}
+
 async function api(p, o) {
   try {
-    const r = await fetch(p, o);
+    const r = await fetch(scoped(p), o);
     // A session that ran out mid-use is not a broken server. Reloading lands on
     // the sign-in page, because "/" serves that to anyone without an account.
     if (r.status === 401) { location.reload(); throw new Error('signed out'); }
