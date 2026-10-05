@@ -37,7 +37,7 @@ docker compose -f "$COMPOSE_FILE" exec -T postgres \
   pg_restore -U manifest -d "$SCRATCH" --no-owner --exit-on-error < "$dump"
 took=$(( $(date +%s) - started ))
 
-tables="catalog users sessions access_requests collection decks deck_cards scan_log prices card_images jobs schema_migrations"
+tables="catalog users sessions access_requests binders binder_members collection decks deck_cards scan_log prices card_images jobs schema_migrations"
 failed=0
 printf '%-18s %10s %10s\n' table live restored
 for t in $tables; do

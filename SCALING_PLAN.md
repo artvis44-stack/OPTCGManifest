@@ -268,7 +268,8 @@ Expand test coverage around storage behavior, concurrency, public security, and 
 9. Split frontend assets and enable strict CSP.
 10. Add Docker/VPS deployment assets.
 11. Add load tests, backups, metrics, and launch checklist.
-12. Retire SQLite from production mode after migration is proven.
+12. Retire SQLite from production mode after migration is proven. (Done: Production
+    refuses to start without a PostgreSQL `MANIFEST_DATABASE_URL`.)
 
 ## Acceptance Criteria
 

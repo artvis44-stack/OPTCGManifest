@@ -5,20 +5,22 @@ namespace Manifest.Data;
 public interface ICardRepository
 {
     CatalogRow? Resolve(string cardId);
-    List<SearchRow> Search(long userId, string? q, string? limit, bool ownedOnly,
+    List<SearchRow> Search(BinderScope scope, string? q, string? limit, bool ownedOnly,
                            string? category, string? color, string? rarity,
                            string? setLabel);
-    Page<SearchRow> SearchPage(long userId, CardFilter filter, string? sort, int limit,
+    Page<SearchRow> SearchPage(BinderScope scope, CardFilter filter, string? sort, int limit,
                                string? cursor);
-    Page<CollectionRow> CollectionPage(long userId, CardFilter filter, string? sort,
+    Page<CollectionRow> CollectionPage(BinderScope scope, CardFilter filter, string? sort,
                                        int limit, string? cursor);
     Facets Facets();
-    List<CollectionRow> Collection(long userId);
-    CardDetailRow? CardDetail(long userId, string rawCardId);
-    Stats Stats(long userId);
-    AdjustResult Adjust(long userId, string rawCardId, int? delta, int? qty, string? note);
-    BulkLogResult AdjustMany(long userId, IReadOnlyList<CardQuantity> cards, string? note);
-    void ResetCollection(long userId);
+    List<CollectionRow> Collection(BinderScope scope);
+    CardDetailRow? CardDetail(BinderScope scope, string rawCardId);
+    Stats Stats(BinderScope scope);
+    AdjustResult Adjust(long binderId, long actorId, string rawCardId, int? delta, int? qty,
+                        string? note);
+    BulkLogResult AdjustMany(long binderId, long actorId, IReadOnlyList<CardQuantity> cards,
+                             string? note);
+    void ResetCollection(long binderId);
     long CatalogCount();
 }
 

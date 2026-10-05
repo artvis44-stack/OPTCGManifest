@@ -52,9 +52,13 @@ public sealed class MigrateSqliteTests : IDisposable
         var bob = users.Create("bob", "correct-horse-battery", "bob@example.com");
         var session = users.StartSession(bob.Id);
 
+        var binders = new BinderRepository(source);
         var cards = new CardRepository(source);
-        cards.Adjust(alice.Id, "OP01-016", 4, null, "binder");
-        cards.Adjust(bob.Id, "OP01-016_p1", 1, null, null);
+        cards.Adjust(binders.Personal(alice.Id), alice.Id, "OP01-016", 4, null, "binder");
+        cards.Adjust(binders.Personal(bob.Id), bob.Id, "OP01-016_p1", 1, null, null);
+        var ours = binders.Create(alice.Id, "Ours", moveMine: false);
+        binders.AddMember(alice.Id, ours.Id, "bob");
+        cards.Adjust(ours.Id, bob.Id, "OP01-001", 3, null, null);
         cards.LogScan(bob.Id, "OP01-016", "ok");
 
         var decks = new DeckRepository(source);
@@ -67,7 +71,7 @@ public sealed class MigrateSqliteTests : IDisposable
 
         // Two copies from before accounts, one of a card Alice already has.
         using (var conn = source.Open())
-            conn.Exec("INSERT INTO collection (user_id, card_id, qty) VALUES (0, 'OP01-016', 2), "
+            conn.Exec("INSERT INTO collection (binder_id, card_id, qty) VALUES (0, 'OP01-016', 2), "
                       + "(0, 'OP01-001', 1)");
 
         var target = FreshTarget();
@@ -79,10 +83,20 @@ public sealed class MigrateSqliteTests : IDisposable
         Assert.Equal(bob.Id, pgUsers.ForToken(session)?.Id);
 
         var pgCards = new CardRepository(pg);
-        var aliceHas = pgCards.Collection(alice.Id).ToDictionary(r => r.CardId, r => r.Qty);
+        var pgBinders = new BinderRepository(pg);
+        var aliceOwn = BinderScope.One(pgBinders.Personal(alice.Id));
+        var aliceHas = pgCards.Collection(aliceOwn).ToDictionary(r => r.CardId, r => r.Qty);
         Assert.Equal(6, aliceHas["OP01-016"]);     // 4 of her own + 2 unclaimed
         Assert.Equal(1, aliceHas["OP01-001"]);
-        Assert.Equal("binder", pgCards.Collection(alice.Id).Single(r => r.CardId == "OP01-016").Note);
+        Assert.Equal("binder", pgCards.Collection(aliceOwn).Single(r => r.CardId == "OP01-016").Note);
+
+        // The shared binder came across with both of them in it, and who added what.
+        var shared = pgCards.Collection(BinderScope.One(ours.Id)).Single();
+        Assert.Equal(3, shared.Qty);
+        Assert.Equal("bob", shared.AddedBy);
+        Assert.Equal(new[] { "Alice", "bob" }, pgBinders.Get(alice.Id, ours.Id)!.Members);
+        var aliceCanUse = pgCards.Collection(BinderScope.Usable(alice.Id)).ToDictionary(r => r.CardId, r => r.Qty);
+        Assert.Equal(4, aliceCanUse["OP01-001"]);  // 1 of her own + 3 shared
         Assert.Equal(cards.CatalogCount(), pgCards.CatalogCount());
 
         var pgDeck = new DeckRepository(pg).Detail(bob.Id, deck.Id);
@@ -92,9 +106,10 @@ public sealed class MigrateSqliteTests : IDisposable
         // The link already in the applicant's mailbox still works.
         Assert.NotNull(new AccessRepository(pg).ByInviteToken(invite));
 
-        // The next account is not handed an id that was copied in.
+        // The next account is not handed an id that was copied in, nor its binder.
         var carol = pgUsers.Create("carol", "correct-horse-battery");
         Assert.True(carol.Id > bob.Id);
+        Assert.True(pgBinders.Personal(carol.Id) > ours.Id);
         Assert.False(carol.IsOwner);
     }
 
@@ -106,7 +121,7 @@ public sealed class MigrateSqliteTests : IDisposable
         var source = Source();
         new UserRepository(source).Create("alice", "correct-horse-battery");
         using (var conn = source.Open())
-            conn.Exec("INSERT INTO collection (user_id, card_id, qty) VALUES (0, 'OP01-016', 2)");
+            conn.Exec("INSERT INTO collection (binder_id, card_id, qty) VALUES (0, 'OP01-016', 2)");
 
         var target = FreshTarget();
         Assert.Equal(1, Migrate(target));

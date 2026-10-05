@@ -75,6 +75,9 @@ public sealed class CollectionRow
     public int Qty { get; set; }
     public string Note { get; set; } = "";
     public string? UpdatedAt { get; set; }
+
+    /// <summary>Who first logged the card into this binder; empty across several binders.</summary>
+    public string? AddedBy { get; set; }
     public string? Name { get; set; }
     public string? SetLabel { get; set; }
     public string? Rarity { get; set; }

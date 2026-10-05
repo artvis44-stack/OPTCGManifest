@@ -40,7 +40,7 @@ public static class WorkerHost
         }
 
         var config = new AppConfig { Root = Cli.RootFrom(args), Verbose = verbose };
-        if (Database.RejectUrl(config.DatabaseUrl) is { } badUrl)
+        if ((Database.RejectUrl(config.DatabaseUrl) ?? config.ProductionDatabaseError()) is { } badUrl)
         {
             Console.Error.WriteLine(badUrl);
             return 1;

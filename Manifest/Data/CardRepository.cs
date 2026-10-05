@@ -102,7 +102,7 @@ public sealed class CardRepository : ICardRepository, IScanRepository
     /// The old unpaged search, kept for callers that predate cursors: the first
     /// page in card-number order, as long as they ask for, up to 3000.
     /// </summary>
-    public List<SearchRow> Search(long userId, string? q, string? limit, bool ownedOnly,
+    public List<SearchRow> Search(BinderScope scope, string? q, string? limit, bool ownedOnly,
                                   string? category, string? color, string? rarity,
                                   string? setLabel)
     {
@@ -120,21 +120,20 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             SetLabel = setLabel,
             Owned = ownedOnly ? true : null,
         };
-        return SearchPage(userId, filter, "number", Math.Clamp(n, 1, 3000), null).Items;
+        return SearchPage(scope, filter, "number", Math.Clamp(n, 1, 3000), null).Items;
     }
 
     /// <summary>
-    /// The catalogue is shared; the qty column beside each card is not. The owner
-    /// travels in the join rather than the WHERE clause, so a card nobody owns still
+    /// The catalogue is shared; the qty column beside each card is not. The binders
+    /// travel in the join rather than the WHERE clause, so a card nobody owns still
     /// comes back with a qty of zero instead of vanishing from the results.
     /// </summary>
-    public Page<SearchRow> SearchPage(long userId, CardFilter filter, string? sort, int limit,
+    public Page<SearchRow> SearchPage(BinderScope scope, CardFilter filter, string? sort, int limit,
                                       string? cursor)
     {
         var order = SortFor(SearchSorts, sort);
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.Bind("@user", userId);
 
         var where = new List<string>();
         var q = (filter.Q ?? "").Trim();
@@ -165,8 +164,7 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         cmd.CommandText = $"""
             SELECT {ListColumns}, COALESCE(k.qty, 0) AS qty, p.gbp AS price_gbp,
                    {order.SelectColumns}
-            FROM catalog c LEFT JOIN collection k
-                             ON k.card_id = c.card_id AND k.user_id = @user
+            FROM catalog c LEFT JOIN {scope.Rows(cmd)} k ON k.card_id = c.card_id
                            LEFT JOIN prices p ON p.card_id = c.card_id
             {(where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "")}
             ORDER BY {order.OrderBy}
@@ -270,21 +268,20 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         };
     }
 
-    public List<CollectionRow> Collection(long userId)
+    public List<CollectionRow> Collection(BinderScope scope)
     {
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            SELECT k.card_id, k.qty, k.note, k.updated_at,
+        cmd.CommandText = $"""
+            SELECT k.card_id, k.qty, k.note, k.updated_at, ab.username AS added_by,
                    c.name, c.set_label, c.rarity, c.variant, c.colors,
                    c.category, c.image_url, c.cost, c.power, c.counter, c.types,
                    p.gbp AS price_gbp
-            FROM collection k LEFT JOIN catalog c ON c.card_id = k.card_id
+            FROM {scope.Rows(cmd)} k LEFT JOIN catalog c ON c.card_id = k.card_id
                               LEFT JOIN prices p ON p.card_id = k.card_id
-            WHERE k.user_id = @user AND k.qty > 0
+                              LEFT JOIN users ab ON ab.id = k.added_by
             ORDER BY k.card_id
             """;
-        cmd.Bind("@user", userId);
         var rows = new List<CollectionRow>();
         using var r = cmd.ExecuteReader();
         while (r.Read())
@@ -294,6 +291,7 @@ public sealed class CardRepository : ICardRepository, IScanRepository
                 Qty = r.IntOr("qty"),
                 Note = r.Text("note"),
                 UpdatedAt = r.Str("updated_at"),
+                AddedBy = r.Str("added_by"),
                 Name = r.Str("name"),
                 SetLabel = r.Str("set_label"),
                 Rarity = r.Str("rarity"),
@@ -311,20 +309,19 @@ public sealed class CardRepository : ICardRepository, IScanRepository
     }
 
     /// <summary>
-    /// One page of what an account owns. Cards logged by number before they reached
+    /// One page of what is in a binder, or several. Cards logged by number before they reached
     /// the catalogue are included - they have no catalogue row to filter on, so any
     /// catalogue filter leaves them out, but a plain listing or a number search does
     /// not.
     /// </summary>
-    public Page<CollectionRow> CollectionPage(long userId, CardFilter filter, string? sort,
+    public Page<CollectionRow> CollectionPage(BinderScope scope, CardFilter filter, string? sort,
                                               int limit, string? cursor)
     {
         var order = SortFor(CollectionSorts, sort);
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.Bind("@user", userId);
 
-        var where = new List<string> { "k.user_id = @user", "k.qty > 0" };
+        var where = new List<string> { "k.qty > 0" };
         var q = (filter.Q ?? "").Trim();
         if (q.Length > 0)
         {
@@ -335,12 +332,13 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         if (order.After(cursor, cmd, _db.Dialect) is { } after) where.Add(after);
 
         cmd.CommandText = $"""
-            SELECT k.card_id, k.qty, k.note, k.updated_at,
+            SELECT k.card_id, k.qty, k.note, k.updated_at, ab.username AS added_by,
                    c.name, c.set_label, c.rarity, c.variant, c.colors,
                    c.category, c.image_url, c.cost, c.power, c.counter, c.types,
                    p.gbp AS price_gbp, {order.SelectColumns}
-            FROM collection k LEFT JOIN catalog c ON c.card_id = k.card_id
+            FROM {scope.Rows(cmd)} k LEFT JOIN catalog c ON c.card_id = k.card_id
                               LEFT JOIN prices p ON p.card_id = k.card_id
+                              LEFT JOIN users ab ON ab.id = k.added_by
             WHERE {string.Join(" AND ", where)}
             ORDER BY {order.OrderBy}
             LIMIT @limit
@@ -353,6 +351,7 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             Qty = r.IntOr("qty"),
             Note = r.Text("note"),
             UpdatedAt = r.Str("updated_at"),
+            AddedBy = r.Str("added_by"),
             Name = r.Str("name"),
             SetLabel = r.Str("set_label"),
             Rarity = r.Str("rarity"),
@@ -368,7 +367,7 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         });
     }
 
-    public CardDetailRow? CardDetail(long userId, string rawCardId)
+    public CardDetailRow? CardDetail(BinderScope scope, string rawCardId)
     {
         var cid = CardId.Normalise(rawCardId) ?? rawCardId.ToUpperInvariant().Trim();
         using var conn = _db.Open();
@@ -376,15 +375,13 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         CardDetailRow? Lookup(string id)
         {
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = """
+            cmd.CommandText = $"""
                 SELECT c.*, COALESCE(k.qty, 0) AS qty, p.gbp AS price_gbp
-                FROM catalog c LEFT JOIN collection k
-                                 ON k.card_id = c.card_id AND k.user_id = @user
+                FROM catalog c LEFT JOIN {scope.Rows(cmd)} k ON k.card_id = c.card_id
                                LEFT JOIN prices p ON p.card_id = c.card_id
                 WHERE c.card_id = @id
                 """;
             cmd.Bind("@id", id);
-            cmd.Bind("@user", userId);
             using var r = cmd.ExecuteReader();
             if (!r.Read()) return null;
             return new CardDetailRow
@@ -412,20 +409,18 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         return Lookup(cid) ?? Lookup(cid.Split('_')[0]);
     }
 
-    public Stats Stats(long userId)
+    public Stats Stats(BinderScope scope)
     {
         using var conn = _db.Open();
         var stats = new Stats();
 
         using (var cmd = conn.CreateCommand())
         {
-            cmd.CommandText = """
+            cmd.CommandText = $"""
                 SELECT COALESCE(SUM(k.qty),0) t, COUNT(*) u,
                        COALESCE(SUM(k.qty * p.gbp),0) v
-                FROM collection k LEFT JOIN prices p ON p.card_id = k.card_id
-                WHERE k.user_id = @user AND k.qty > 0
+                FROM {scope.Rows(cmd)} k LEFT JOIN prices p ON p.card_id = k.card_id
                 """;
-            cmd.Bind("@user", userId);
             using var r = cmd.ExecuteReader();
             if (r.Read())
             {
@@ -437,15 +432,13 @@ public sealed class CardRepository : ICardRepository, IScanRepository
 
         using (var cmd = conn.CreateCommand())
         {
-            cmd.CommandText = """
+            cmd.CommandText = $"""
                 SELECT c.set_label AS s, SUM(k.qty) AS n,
                        COUNT(DISTINCT k.card_id) AS uniq,
                        (SELECT COUNT(*) FROM catalog x WHERE x.set_label = c.set_label) AS total
-                FROM collection k JOIN catalog c ON c.card_id = k.card_id
-                WHERE k.user_id = @user AND k.qty > 0
+                FROM {scope.Rows(cmd)} k JOIN catalog c ON c.card_id = k.card_id
                 GROUP BY c.set_label ORDER BY c.set_label
                 """;
-            cmd.Bind("@user", userId);
             using var r = cmd.ExecuteReader();
             while (r.Read())
                 stats.Sets.Add(new SetStat
@@ -460,8 +453,13 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         return stats;
     }
 
-    /// <summary>Atomic. Two phones logging the same card at once both count.</summary>
-    public AdjustResult Adjust(long userId, string rawCardId, int? delta, int? qty, string? note)
+    /// <summary>
+    /// Atomic. Two phones logging the same card at once both count - which, in a
+    /// shared binder, may be two people. <paramref name="actorId"/> is recorded as
+    /// who added a card the binder did not have yet.
+    /// </summary>
+    public AdjustResult Adjust(long binderId, long actorId, string rawCardId, int? delta, int? qty,
+                               string? note)
     {
         var cid = CardId.Normalise(rawCardId) ?? rawCardId.ToUpperInvariant().Trim();
         if (cid.Length == 0) throw new ArgumentException("empty card_id");
@@ -475,14 +473,15 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             {
                 using var cmd = conn.CreateCommand();
                 cmd.CommandText = $"""
-                    INSERT INTO collection (user_id, card_id, qty, note)
-                    VALUES (@user,@id,@qty,@note)
-                    ON CONFLICT(user_id, card_id) DO UPDATE
+                    INSERT INTO collection (binder_id, card_id, qty, note, added_by)
+                    VALUES (@binder,@id,@qty,@note,@actor)
+                    ON CONFLICT(binder_id, card_id) DO UPDATE
                       SET qty = excluded.qty,
                           note = COALESCE(NULLIF(excluded.note,''), collection.note),
                           updated_at = {now}
                     """;
-                cmd.Bind("@user", userId);
+                cmd.Bind("@binder", binderId);
+                cmd.Bind("@actor", actorId);
                 cmd.Bind("@id", cid);
                 cmd.Bind("@qty", Math.Max(0, qty.Value));
                 cmd.Bind("@note", note ?? "");
@@ -495,15 +494,16 @@ public sealed class CardRepository : ICardRepository, IScanRepository
                 // CASE rather than MAX/GREATEST: SQLite has only the one and
                 // PostgreSQL only the other.
                 cmd.CommandText = $"""
-                    INSERT INTO collection (user_id, card_id, qty, note)
-                    VALUES (@user,@id,@seed,@note)
-                    ON CONFLICT(user_id, card_id) DO UPDATE
+                    INSERT INTO collection (binder_id, card_id, qty, note, added_by)
+                    VALUES (@binder,@id,@seed,@note,@actor)
+                    ON CONFLICT(binder_id, card_id) DO UPDATE
                       SET qty = CASE WHEN collection.qty + @delta < 0 THEN 0
                                      ELSE collection.qty + @delta END,
                           note = COALESCE(NULLIF(excluded.note,''), collection.note),
                           updated_at = {now}
                     """;
-                cmd.Bind("@user", userId);
+                cmd.Bind("@binder", binderId);
+                cmd.Bind("@actor", actorId);
                 cmd.Bind("@id", cid);
                 cmd.Bind("@seed", Math.Max(0, d));
                 cmd.Bind("@note", note ?? "");
@@ -514,8 +514,8 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             using (var clean = conn.CreateCommand())
             {
                 clean.CommandText =
-                    "DELETE FROM collection WHERE user_id = @user AND card_id = @id AND qty <= 0";
-                clean.Bind("@user", userId);
+                    "DELETE FROM collection WHERE binder_id = @binder AND card_id = @id AND qty <= 0";
+                clean.Bind("@binder", binderId);
                 clean.Bind("@id", cid);
                 clean.ExecuteNonQuery();
             }
@@ -523,8 +523,8 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             using (var read = conn.CreateCommand())
             {
                 read.CommandText =
-                    "SELECT qty FROM collection WHERE user_id = @user AND card_id = @id";
-                read.Bind("@user", userId);
+                    "SELECT qty FROM collection WHERE binder_id = @binder AND card_id = @id";
+                read.Bind("@binder", binderId);
                 read.Bind("@id", cid);
                 var value = read.ExecuteScalar();
                 updated = value is null or DBNull ? 0 : Convert.ToInt32(value);
@@ -547,7 +547,8 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         };
     }
 
-    public BulkLogResult AdjustMany(long userId, IReadOnlyList<CardQuantity> cards, string? note)
+    public BulkLogResult AdjustMany(long binderId, long actorId, IReadOnlyList<CardQuantity> cards,
+                                    string? note)
     {
         var clean = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var c in cards)
@@ -564,14 +565,15 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         {
             using var cmd = conn.CreateCommand();
             cmd.CommandText = $"""
-                INSERT INTO collection (user_id, card_id, qty, note)
-                VALUES (@user,@id,@delta,@note)
-                ON CONFLICT(user_id, card_id) DO UPDATE
+                INSERT INTO collection (binder_id, card_id, qty, note, added_by)
+                VALUES (@binder,@id,@delta,@note,@actor)
+                ON CONFLICT(binder_id, card_id) DO UPDATE
                   SET qty = collection.qty + excluded.qty,
                       note = COALESCE(NULLIF(excluded.note,''), collection.note),
                       updated_at = {_db.Dialect.Now}
                 """;
-            cmd.Bind("@user", userId);
+            cmd.Bind("@binder", binderId);
+            cmd.Bind("@actor", actorId);
             cmd.Bind("@note", note ?? "");
             var idParam = cmd.Bind("@id", null);
             var deltaParam = cmd.Bind("@delta", null);
@@ -598,8 +600,8 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         {
             var card = Resolve(conn, cid);
             using var read = conn.CreateCommand();
-            read.CommandText = "SELECT qty FROM collection WHERE user_id = @user AND card_id = @id";
-            read.Bind("@user", userId);
+            read.CommandText = "SELECT qty FROM collection WHERE binder_id = @binder AND card_id = @id";
+            read.Bind("@binder", binderId);
             read.Bind("@id", cid);
             result.Cards.Add(new AdjustResult
             {
@@ -617,13 +619,13 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         return result;
     }
 
-    /// <summary>Empties one account's collection. Everyone else's is untouched.</summary>
-    public void ResetCollection(long userId)
+    /// <summary>Empties one binder. Every other binder is untouched.</summary>
+    public void ResetCollection(long binderId)
     {
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM collection WHERE user_id = @user";
-        cmd.Bind("@user", userId);
+        cmd.CommandText = "DELETE FROM collection WHERE binder_id = @binder";
+        cmd.Bind("@binder", binderId);
         cmd.ExecuteNonQuery();
     }
 

@@ -40,6 +40,9 @@ public static class SqliteToPostgres
                     + "colors, cost, power, counter, types, effect, image_url", null),
         ("prices", "card_id, usd, gbp, fetched_at", null),
         ("users", "id, username, password_hash, email, created_at, last_seen", null),
+        ("binders", "id, name, kind, owner_id, visible, created_at", null),
+        ("binder_members", "binder_id, user_id, added_at",
+         "binder_id IN (SELECT id FROM binders) AND user_id IN (SELECT id FROM users)"),
         ("access_requests", "id, email, note, status, created_at, decided_at, decided_by, "
                             + "requested_from, action_token_hash, action_expires_at, "
                             + "invite_token_hash, invite_expires_at, invite_sent_at, used_at, user_id",
@@ -48,12 +51,21 @@ public static class SqliteToPostgres
          "user_id IN (SELECT id FROM users)"),
         ("decks", "id, user_id, name, leader_card_id, created_at, updated_at", null),
         ("deck_cards", "deck_id, card_id, qty", "deck_id IN (SELECT id FROM decks)"),
-        ("collection", "user_id, card_id, qty, note, added_at, updated_at", null),
+        ("collection", "binder_id, card_id, qty, note, added_at, updated_at, added_by", null),
         ("scan_log", "id, user_id, card_id, result, at", null),
     };
 
-    /// <summary>The tables whose rows can belong to nobody (user_id 0).</summary>
-    static readonly string[] Owned = { "collection", "decks", "scan_log" };
+    /// <summary>
+    /// The tables whose rows can belong to nobody, and the column that says so: 0
+    /// there means the row predates accounts. The collection's rows belong to a
+    /// binder; the others' to an account.
+    /// </summary>
+    static readonly Dictionary<string, string> Owned = new()
+    {
+        ["collection"] = "binder_id",
+        ["decks"] = "user_id",
+        ["scan_log"] = "user_id",
+    };
 
     static readonly HashSet<string> Timestamps = new(StringComparer.Ordinal)
     {
@@ -157,6 +169,9 @@ public static class SqliteToPostgres
         using var snapshot = src.BeginTransaction(deferred: true);
 
         var owner = ResolveOwner(src, ownerName);
+        // Unclaimed cards go into the owner's own binder, which the file has because
+        // bringing its schema up to date gave every account one.
+        long? ownerBinder = owner is { } o ? PersonalBinder(src, o) : null;
 
         using var dst = target.Open();
         using var tx = dst.BeginTransaction();
@@ -170,7 +185,7 @@ public static class SqliteToPostgres
         var copied = new Dictionary<string, long>();
         foreach (var (table, columns, where) in Tables)
         {
-            copied[table] = CopyTable(src, dst, table, columns, where, owner);
+            copied[table] = CopyTable(src, dst, table, columns, where, owner, ownerBinder);
             Console.WriteLine($"  {table,-16} {copied[table],8:N0} rows");
         }
 
@@ -200,7 +215,7 @@ public static class SqliteToPostgres
                 : throw new MigrationError($"--owner: there is no account called {name}.");
         }
 
-        var unclaimed = Owned.Sum(t => Count(src, $"SELECT COUNT(*) FROM {t} WHERE user_id = 0"));
+        var unclaimed = Owned.Sum(t => Count(src, $"SELECT COUNT(*) FROM {t.Key} WHERE {t.Value} = 0"));
         if (unclaimed == 0 || owner is not null) return owner;
 
         // Nobody to give them to yet: left as they are, and the first account made
@@ -211,9 +226,20 @@ public static class SqliteToPostgres
             $"{unclaimed} rows belong to no account. Say whose they are with --owner <name>.");
     }
 
+    static long PersonalBinder(SqliteConnection src, long userId)
+    {
+        using var cmd = src.CreateCommand();
+        cmd.CommandText = "SELECT id FROM binders WHERE kind = 'personal' AND owner_id = @u";
+        cmd.Bind("@u", userId);
+        return cmd.ExecuteScalar() is { } id
+            ? Convert.ToInt64(id)
+            : throw new MigrationError($"account {userId} has no binder of its own in the file.");
+    }
+
     static void RefuseIfInUse(DbConnection dst)
     {
-        var busy = new[] { "users", "access_requests", "sessions", "decks", "collection", "scan_log" }
+        var busy = new[] { "users", "access_requests", "sessions", "binders", "decks", "collection",
+                           "scan_log" }
             .Where(t => Count(dst, $"SELECT COUNT(*) FROM (SELECT 1 FROM {t} LIMIT 1) x") > 0)
             .ToList();
         if (busy.Count > 0)
@@ -223,7 +249,7 @@ public static class SqliteToPostgres
     }
 
     static long CopyTable(SqliteConnection src, DbConnection dst, string table, string columns,
-                          string? where, long? owner)
+                          string? where, long? owner, long? ownerBinder)
     {
         var names = columns.Split(',', StringSplitOptions.TrimEntries);
 
@@ -236,7 +262,7 @@ public static class SqliteToPostgres
         // The owner's own copy of a card and the unclaimed copy of it become one row.
         if (table == "collection" && owner is not null)
             write.CommandText += """
-                 ON CONFLICT (user_id, card_id) DO UPDATE
+                 ON CONFLICT (binder_id, card_id) DO UPDATE
                    SET qty = collection.qty + excluded.qty,
                        note = COALESCE(NULLIF(collection.note, ''), excluded.note),
                        added_at = LEAST(collection.added_at, excluded.added_at),
@@ -253,9 +279,12 @@ public static class SqliteToPostgres
                 var value = r.IsDBNull(i) ? null : r.GetValue(i);
                 if (value is not null && Timestamps.Contains(names[i]))
                     value = Instant(value, table, names[i]);
-                if (names[i] == "user_id" && owner is not null && Owned.Contains(table)
-                    && value is long id && id == Database.Unclaimed)
-                    value = owner.Value;
+                if (owner is not null && Owned.TryGetValue(table, out var column)
+                    && names[i] == column && value is long id && id == Database.Unclaimed)
+                    value = table == "collection" ? ownerBinder!.Value : owner.Value;
+                // SQLite keeps booleans as 0 and 1; PostgreSQL will not take a number.
+                if (names[i] == "visible" && value is not null)
+                    value = Convert.ToInt64(value) != 0;
                 parameters[i].Value = value ?? DBNull.Value;
             }
             write.ExecuteNonQuery();
@@ -308,7 +337,7 @@ public static class SqliteToPostgres
     /// </summary>
     static void ResetIdentities(DbConnection dst)
     {
-        foreach (var table in new[] { "users", "access_requests", "decks", "scan_log" })
+        foreach (var table in new[] { "users", "binders", "access_requests", "decks", "scan_log" })
             dst.Exec($"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
                      + $"COALESCE(MAX(id), 0) + 1, false) FROM {table}");
     }

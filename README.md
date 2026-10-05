@@ -152,9 +152,27 @@ If a picture never appears, the machine running the server could not reach
 `en.onepiece-cardgame.com`. Everything else keeps working — art is decoration,
 the counts are the point.
 
+## Binders: sharing a collection
+
+Cards live in binders. Everyone has their own, **Mine**. To keep one collection
+with someone else, open **Manage binders**, make a shared binder (tick "move
+everything in Mine into it" to bring your existing cards along) and add them by
+username. Everyone in a shared binder can see and change it, and each card shows who
+first logged it.
+
+The **Binder** picker at the top decides where typed, searched and scanned cards go,
+and what My cards, the totals and the CSV export show. **All I can use** adds every
+binder you are in together, read-only. Decks count cards from all of them. A card
+can be moved between binders from its dossier, and you can let the people you share
+a binder with look at your own Mine, read-only, with the switch in Manage binders.
+
+The API takes the same choice as `?binder=<id>` or `?binder=all` on the collection,
+search, card, stats and export routes; without it, they mean your own binder.
+
 ## Getting your data out
 
-`Export CSV` in the My cards tab, or `http://<host>:8420/api/export.csv`. Columns:
+`Export CSV` in the My cards tab exports the binder you are looking at, or
+`http://<host>:8420/api/export.csv?binder=<id>`. Columns:
 card number, name, set, variant, rarity, colours, category, quantity, note, last
 updated. Opens in Excel, Sheets, or anything else.
 
@@ -245,7 +263,9 @@ MANIFEST_DATABASE_URL=postgres://user:pass@host:5432/manifest?sslmode=require \
 
 The schema is created and kept current by the numbered scripts in
 `Manifest/Data/Migrations/Postgres/`, applied on startup under a lock so several
-containers can start at once. Unset, it stays `sqlite://manifest.db`.
+containers can start at once. Unset, it stays `sqlite://manifest.db` - but only
+in Development: with `MANIFEST_ENV=Production` (the container image's default) the
+server and worker refuse to start on anything but PostgreSQL.
 
 To move an existing collection across, stop the server, keep a copy of
 `manifest.db`, and point the copy at an empty PostgreSQL database:

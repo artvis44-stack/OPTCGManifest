@@ -23,6 +23,9 @@ public static class Endpoints
         "/api/export.csv",
         "/api/decks", "/api/decks/<id>", "/api/decks/<id>/card",
         "/api/decks/<id>/cards", "/api/decks/<id>/delete", "/api/scan", "/api/scan/<id>",
+        "/api/binders", "/api/binders/<id>", "/api/binders/<id>/members",
+        "/api/binders/<id>/members/<username>/delete", "/api/binders/<id>/delete",
+        "/api/binders/visibility", "/api/binders/move",
     };
 
     public static void Map(WebApplication app)
@@ -30,6 +33,7 @@ public static class Endpoints
         MapGet(app);
         MapPost(app);
         AccessEndpoints.Map(app);
+        BinderEndpoints.Map(app);
 
         app.MapFallback(async ctx =>
         {
@@ -61,6 +65,16 @@ public static class Endpoints
         var config = app.Services.GetRequiredService<AppConfig>();
         var database = app.Services.GetRequiredService<Database>();
         var assets = app.Services.GetRequiredService<WebAssets>();
+        var binders = app.Services.GetRequiredService<BinderRepository>();
+
+        // Every read below covers ?binder= (see BinderEndpoints); one the account
+        // cannot see answers as if it did not exist.
+        async Task<BinderScope?> Scope(HttpContext ctx)
+        {
+            if (BinderEndpoints.ReadScope(ctx, binders) is { } scope) return scope;
+            await ctx.Json(404, new { error = "not found" });
+            return null;
+        }
 
         // The one route that answers differently to a stranger: the app for an
         // account, the sign-in page for anyone else.
@@ -126,7 +140,8 @@ public static class Endpoints
 
         app.MapGet("/api/card/{**cardId}", async (HttpContext ctx, string cardId) =>
         {
-            var card = cards.CardDetail(ctx.UserId(), cardId);
+            if (await Scope(ctx) is not { } scope) return;
+            var card = cards.CardDetail(scope, cardId);
             if (card is null) { await ctx.Json(404, new { error = "not found" }); return; }
             await ctx.Json(200, new { card });
         });
@@ -152,16 +167,17 @@ public static class Endpoints
         app.MapGet("/api/search", async ctx =>
         {
             var q = ctx.Request.Query;
+            if (await Scope(ctx) is not { } scope) return;
             if (Paged(ctx) is { } cursor)
             {
-                var page = cards.SearchPage(ctx.UserId(), Filter(q), Blank(q["sort"].FirstOrDefault()),
+                var page = cards.SearchPage(scope, Filter(q), Blank(q["sort"].FirstOrDefault()),
                                             Keyset.Limit(q["limit"]), cursor);
                 await ctx.Json(200, new { items = page.Items, next_cursor = page.NextCursor });
                 return;
             }
 
             var results = cards.Search(
-                ctx.UserId(),
+                scope,
                 q["q"].FirstOrDefault() ?? "",
                 q["limit"].FirstOrDefault() ?? "40",
                 (q["owned"].FirstOrDefault() ?? "0") == "1",
@@ -177,23 +193,28 @@ public static class Endpoints
         app.MapGet("/api/collection", async ctx =>
         {
             var q = ctx.Request.Query;
+            if (await Scope(ctx) is not { } scope) return;
             if (Paged(ctx) is { } cursor)
             {
-                var page = cards.CollectionPage(ctx.UserId(), Filter(q), Blank(q["sort"].FirstOrDefault()),
+                var page = cards.CollectionPage(scope, Filter(q), Blank(q["sort"].FirstOrDefault()),
                                                 Keyset.Limit(q["limit"]), cursor);
                 await ctx.Json(200, new { items = page.Items, next_cursor = page.NextCursor });
                 return;
             }
             await ctx.Json(200, new
             {
-                cards = cards.Collection(ctx.UserId()),
-                stats = cards.Stats(ctx.UserId()),
+                cards = cards.Collection(scope),
+                stats = cards.Stats(scope),
             });
         });
 
-        app.MapGet("/api/stats", async ctx => await ctx.Json(200, cards.Stats(ctx.UserId())));
-        app.MapGet("/api/collection/stats", async ctx =>
-            await ctx.Json(200, cards.Stats(ctx.UserId())));
+        async Task StatsFor(HttpContext ctx)
+        {
+            if (await Scope(ctx) is not { } scope) return;
+            await ctx.Json(200, cards.Stats(scope));
+        }
+        app.MapGet("/api/stats", StatsFor);
+        app.MapGet("/api/collection/stats", StatsFor);
 
         // Told to a stranger as readily as to an account, because the sign-in page
         // needs it before there is anyone to be: it is what decides whether the
@@ -254,12 +275,14 @@ public static class Endpoints
         }));
 
         app.MapGet("/api/export.csv", async ctx =>
+        {
+            if (await Scope(ctx) is not { } scope) return;
             await ctx.Send(200,
-                System.Text.Encoding.UTF8.GetBytes(
-                    CsvExport.Write(cards.Collection(ctx.UserId()))),
+                System.Text.Encoding.UTF8.GetBytes(CsvExport.Write(cards.Collection(scope))),
                 "text/csv; charset=utf-8",
                 new[] { ("Content-Disposition",
-                         "attachment; filename=\"one-piece-manifest.csv\"") }));
+                         "attachment; filename=\"one-piece-manifest.csv\"") });
+        });
     }
 
     static void MapPost(WebApplication app)
@@ -271,6 +294,7 @@ public static class Endpoints
         var config = app.Services.GetRequiredService<AppConfig>();
         var users = app.Services.GetRequiredService<UserRepository>();
         var access = app.Services.GetRequiredService<AccessRepository>();
+        var binders = app.Services.GetRequiredService<BinderRepository>();
 
         MapAuth(app, users, access, config);
 
@@ -282,7 +306,8 @@ public static class Endpoints
                 await ctx.Json(400, new { error = "card_id required" });
                 return;
             }
-            await ctx.Json(200, cards.Adjust(ctx.UserId(), body.CardId, body.Delta,
+            if (await BinderEndpoints.WriteBinder(ctx, binders) is not { } binder) return;
+            await ctx.Json(200, cards.Adjust(binder, ctx.UserId(), body.CardId, body.Delta,
                                              body.Qty, body.Note));
         });
 
@@ -296,7 +321,8 @@ public static class Endpoints
                 return;
             }
 
-            await ctx.Json(200, cards.AdjustMany(ctx.UserId(), list, body.Note));
+            if (await BinderEndpoints.WriteBinder(ctx, binders) is not { } binder) return;
+            await ctx.Json(200, cards.AdjustMany(binder, ctx.UserId(), list, body.Note));
         });
 
         app.MapPost("/api/decks", async ctx =>
@@ -436,7 +462,8 @@ public static class Endpoints
 
         app.MapPost("/api/reset", async ctx =>
         {
-            cards.ResetCollection(ctx.UserId());
+            if (await BinderEndpoints.WriteBinder(ctx, binders) is not { } binder) return;
+            cards.ResetCollection(binder);
             await ctx.Json(200, new { ok = true });
         });
     }

@@ -148,8 +148,10 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
                 id = Convert.ToInt64(cmd.ExecuteScalar());
             }
 
+            var binder = BinderRepository.CreatePersonal(conn, id);
+
             // First account in: take ownership of the pre-accounts data.
-            if (id == 1) Claim(conn, id);
+            if (id == 1) Claim(conn, id, binder);
 
             tx.Commit();
             return new User { Id = id, Username = name, Email = address, IsOwner = id == 1 };
@@ -166,10 +168,20 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
         }
     }
 
-    static void Claim(DbConnection conn, long userId)
+    static void Claim(DbConnection conn, long userId, long binderId)
     {
         var moved = 0;
-        foreach (var table in new[] { "collection", "decks", "scan_log" })
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                UPDATE collection SET binder_id = @b, added_by = @u WHERE binder_id = @unclaimed
+                """;
+            cmd.Bind("@b", binderId);
+            cmd.Bind("@u", userId);
+            cmd.Bind("@unclaimed", Database.Unclaimed);
+            moved += cmd.ExecuteNonQuery();
+        }
+        foreach (var table in new[] { "decks", "scan_log" })
         {
             using var cmd = conn.CreateCommand();
             cmd.CommandText = $"UPDATE {table} SET user_id = @u WHERE user_id = @unclaimed";
@@ -244,11 +256,18 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
             {
                 // deck_cards has no user_id of its own; it belongs to whoever owns
                 // the deck, so it goes by subquery before the decks themselves.
+                // Their own binder goes with them; shared binders stay with whoever
+                // else is in them, and go only if nobody is.
                 cmd.CommandText = """
                     DELETE FROM deck_cards WHERE deck_id IN
                         (SELECT id FROM decks WHERE user_id = @id);
                     DELETE FROM decks WHERE user_id = @id;
-                    DELETE FROM collection WHERE user_id = @id;
+                    DELETE FROM collection WHERE binder_id IN
+                        (SELECT id FROM binders WHERE kind = 'personal' AND owner_id = @id);
+                    DELETE FROM binder_members WHERE binder_id IN
+                        (SELECT id FROM binders WHERE kind = 'personal' AND owner_id = @id);
+                    DELETE FROM binders WHERE kind = 'personal' AND owner_id = @id;
+                    DELETE FROM binder_members WHERE user_id = @id;
                     DELETE FROM scan_log WHERE user_id = @id;
                     DELETE FROM sessions WHERE user_id = @id;
                     DELETE FROM users WHERE id = @id;
@@ -256,6 +275,7 @@ public sealed class UserRepository : IUserRepository, ISessionRepository
                 cmd.Bind("@id", user.Id);
                 cmd.ExecuteNonQuery();
             }
+            BinderRepository.DropEmptySharedBinders(conn);
             tx.Commit();
         }
         return true;

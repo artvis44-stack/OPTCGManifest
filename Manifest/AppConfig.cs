@@ -251,6 +251,8 @@ public sealed class AppConfig
 
         if (Data.Database.RejectUrl(DatabaseUrl) is { } badUrl)
             errors.Add(badUrl);
+        else if (ProductionDatabaseError() is { } sqliteInProduction)
+            errors.Add(sqliteInProduction);
 
         if (RedisUrl is { } redis)
         {
@@ -305,6 +307,19 @@ public sealed class AppConfig
 
         return errors;
     }
+
+    /// <summary>
+    /// Production keeps its data in PostgreSQL only. SQLite stays for running on one
+    /// machine and as the source migrate-sqlite reads; in a container it would be a
+    /// fresh, empty file on the app's own volume, so a missing or mistyped
+    /// MANIFEST_DATABASE_URL stops the start rather than quietly serving nothing.
+    /// </summary>
+    public string? ProductionDatabaseError() =>
+        IsProduction && !Data.Database.IsPostgresUrl(DatabaseUrl)
+            ? "Production needs PostgreSQL: set MANIFEST_DATABASE_URL to a postgres:// URL. "
+              + "SQLite is for running on one machine (MANIFEST_ENV=Development) and for "
+              + "migrate-sqlite to read from."
+            : null;
 
     static TimeSpan? Hours(string name) =>
         double.TryParse(Env(name), out var h) && h > 0 ? TimeSpan.FromHours(h) : null;

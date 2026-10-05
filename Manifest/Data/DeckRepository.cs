@@ -91,20 +91,21 @@ public sealed class DeckRepository : IDeckRepository
         var cards = new List<DeckCardRow>();
         using (var cmd = conn.CreateCommand())
         {
-            cmd.CommandText = """
+            // Owned counts every binder the deck's owner is in: their own cards and
+            // the shared ones alike are there to build from.
+            cmd.CommandText = $"""
                 SELECT dc.qty, c.card_id, c.base_id, c.variant, c.name, c.category,
                        c.colors, c.cost, c.power, c.counter, c.types, c.effect,
                        c.set_label, c.rarity, c.image_url,
                        COALESCE(k.qty, 0) AS owned_qty, p.gbp AS price_gbp
                 FROM deck_cards dc
                 JOIN catalog c ON c.card_id = dc.card_id
-                LEFT JOIN collection k ON k.card_id = dc.card_id AND k.user_id = @user
+                LEFT JOIN {BinderScope.Usable(userId).Rows(cmd)} k ON k.card_id = dc.card_id
                 LEFT JOIN prices p ON p.card_id = dc.card_id
                 WHERE dc.deck_id = @id
                 ORDER BY c.base_id, c.variant
                 """;
             cmd.Bind("@id", deckId);
-            cmd.Bind("@user", userId);
             using var r = cmd.ExecuteReader();
             while (r.Read())
                 cards.Add(new DeckCardRow

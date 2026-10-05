@@ -160,8 +160,11 @@ function makePager({host, url, paint, empty}) {
 // with no price yet just shows nothing rather than a placeholder.
 const fmtGBP = v => (v || v === 0) ? '£' + v.toFixed(2) : '';
 
+// Who put a card in a shared binder; nothing anywhere else.
+const addedBy = c => c.added_by && sharedView() ? 'by ' + c.added_by : '';
+
 function rowHTML(c, qty) {
-  const tags = [c.set_label, c.rarity, c.variant, c.colors].filter(Boolean).join(' · ');
+  const tags = [c.set_label, c.rarity, c.variant, c.colors, addedBy(c)].filter(Boolean).join(' · ');
   const price = fmtGBP(c.price_gbp);
   return `<div class="row ${c.card_id===lastHit?'hit':''}" data-id="${esc(c.card_id)}">
     <img loading="lazy" alt="" src="/img/${encodeURIComponent(c.card_id)}">
@@ -220,7 +223,7 @@ function gridHTML(c, qty) {
     </div>
     <div class="nm">${esc(c.name || 'Not in catalogue')}</div>
     <div class="no">${esc(c.card_id)}${rar ? ' · ' + esc(rar) : ''}${
-      c.variant ? ' · ' + esc(c.variant) : ''}</div>
+      c.variant ? ' · ' + esc(c.variant) : ''}${addedBy(c) ? ' · ' + esc(addedBy(c)) : ''}</div>
   </div>`;
 }
 
@@ -310,7 +313,7 @@ const collectionActs = c => `<div class="cv-act">
     <span class="n" data-qty>${c.qty || 0}</span>
     <button class="stepper" data-step="1" aria-label="One more">+</button>
     <span class="lbl">owned</span>
-  </div>`;
+  </div>${moveActs(c)}`;
 
 function cardViewHTML(c, o) {
   o = o || {};
@@ -388,6 +391,7 @@ function wireCollectionActs(host, c) {
     refreshTotals();
     syncCardQty(c.card_id, r.qty);
   });
+  wireMoveActs(host, c);
 }
 
 // The list endpoints leave out effect text to keep search fast; fetch it once the

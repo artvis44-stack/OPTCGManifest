@@ -9,6 +9,7 @@
 <script src="/js/api.js" defer></script>
 <script src="/js/cards.js" defer></script>
 <script src="/js/collection.js" defer></script>
+<script src="/js/binders.js" defer></script>
 <script src="/js/decks.js" defer></script>
 <script src="/js/scan.js" defer></script>
 <script src="/js/session.js" defer></script>
@@ -53,6 +54,14 @@
 
 <div class="shell">
 <main class="wrap">
+
+<!-- BINDER: which binder you are looking at, and logging into -->
+<div class="binderbar" id="binderBar">
+  <label for="binderPick">Binder</label>
+  <select id="binderPick" aria-label="Binder"></select>
+  <span class="binderNote" id="binderNote"></span>
+  <button type="button" class="ghost" id="btnManageBinders">Manage binders</button>
+</div>
 
 <!-- LOG -->
 <section id="paneLog">
@@ -118,7 +127,7 @@
   <div class="panel">
     <div class="panelHead">
       <h2>My cards</h2>
-      <span class="sm">everything you’ve logged</span>
+      <span class="sm" id="ownedWhere">everything you’ve logged</span>
       <div class="viewtoggle" id="viewOwn" role="group" aria-label="Result layout">
         <button type="button" data-view="grid" class="on">Grid</button>
         <button type="button" data-view="list">List</button>
@@ -156,9 +165,10 @@
   <div id="owned"></div>
   <div class="setgrid" id="setBreak"></div>
   <div class="tools">
-    <a href="/api/export.csv" download>Export CSV</a>
-    <button id="btnReset">Clear everything</button>
+    <a href="/api/export.csv" id="exportLink" download>Export CSV</a>
+    <button id="btnReset">Clear this binder</button>
   </div>
+
 </section>
 
 <!-- DECK -->

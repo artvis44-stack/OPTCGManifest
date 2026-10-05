@@ -135,7 +135,10 @@ $('#filter').oninput = () => { clearTimeout(ownTimer);
   $('#' + id).onchange = () => ownPager.reset().catch(() => {}));
 
 $('#btnReset').onclick = async () => {
-  if (!confirm('Delete every logged card? This cannot be undone.')) return;
+  const b = currentBinder();
+  const shared = b && b.kind === 'shared'
+    ? ` Everyone in ${b.name} loses them too.` : '';
+  if (!confirm(`Delete every card in ${b ? b.name : 'this binder'}?${shared} This cannot be undone.`)) return;
   await api('/api/reset', {method:'POST',
     headers:{'content-type':'application/json'}, body: '{}'});
   loadOwned(); refreshTotals();
