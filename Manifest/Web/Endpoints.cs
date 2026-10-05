@@ -18,11 +18,11 @@ public static class Endpoints
         "/api/access/request", "/api/access/review", "/api/access/decide",
         "/api/access/invite", "/api/access/requests",
         "/api/access/requests/<id>/approve", "/api/access/requests/<id>/deny",
-        "/api/search", "/api/facets", "/api/card/<card-id>",
+        "/api/search", "/api/facets", "/api/card/<card-id>", "/api/prints/<card-id>",
         "/api/collection", "/api/collection/bulk", "/api/collection/stats", "/api/stats",
         "/api/export.csv",
         "/api/decks", "/api/decks/<id>", "/api/decks/<id>/card",
-        "/api/decks/<id>/cards", "/api/decks/<id>/delete", "/api/scan", "/api/scan/<id>",
+        "/api/decks/<id>/cards", "/api/decks/<id>/print", "/api/decks/<id>/delete", "/api/scan", "/api/scan/<id>",
         "/api/binders", "/api/binders/<id>", "/api/binders/<id>/members",
         "/api/binders/<id>/members/<username>/delete", "/api/binders/<id>/delete",
         "/api/binders/visibility", "/api/binders/move",
@@ -146,6 +146,12 @@ public static class Endpoints
             var card = cards.CardDetail(scope, cardId);
             if (card is null) { await ctx.Json(404, new { error = "not found" }); return; }
             await ctx.Json(200, new { card });
+        });
+
+        app.MapGet("/api/prints/{**cardId}", async (HttpContext ctx, string cardId) =>
+        {
+            if (await Scope(ctx) is not { } scope) return;
+            await ctx.Json(200, new { prints = cards.Prints(scope, cardId) });
         });
 
         app.MapGet("/api/decks", async ctx =>
@@ -360,6 +366,28 @@ public static class Endpoints
             try
             {
                 deck = decks.SetCard(ctx.UserId(), id, body.CardId, body.Qty);
+            }
+            catch (RuleViolation e)
+            {
+                await ctx.Json(400, new { error = e.Message });
+                return;
+            }
+            if (deck is null) { await ctx.Json(404, new { error = "not found" }); return; }
+            await ctx.Json(200, new { deck });
+        });
+
+        app.MapPost("/api/decks/{id:long}/print", async (HttpContext ctx, long id) =>
+        {
+            var body = await Body<DeckPrintPost>(ctx);
+            if (string.IsNullOrEmpty(body.From) || string.IsNullOrEmpty(body.To))
+            {
+                await ctx.Json(400, new { error = "from and to required" });
+                return;
+            }
+            DeckDetail? deck;
+            try
+            {
+                deck = decks.SwapPrint(ctx.UserId(), id, body.From, body.To);
             }
             catch (RuleViolation e)
             {
@@ -686,6 +714,7 @@ public static class Endpoints
         Rarity = Blank(q["rarity"].FirstOrDefault()),
         SetLabel = Blank(q["set"].FirstOrDefault()),
         Owned = q["owned"].FirstOrDefault() switch { "1" => true, "0" => false, _ => null },
+        GroupPrints = q["group"].FirstOrDefault() == "prints",
     };
 
     static string? Blank(string? s) => string.IsNullOrEmpty(s) ? null : s;

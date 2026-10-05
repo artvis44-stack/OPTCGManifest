@@ -161,10 +161,31 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         AddCatalogFilters(where, cmd, filter);
         if (order.After(cursor, cmd, _db.Dialect) is { } after) where.Add(after);
 
+        // Rows() binds the scope's parameters, so it is called once whichever join is used.
+        var scopeRows = scope.Rows(cmd);
+        var ownedJoin = $"{scopeRows} k ON k.card_id = c.card_id";
+        var printCount = "";
+        if (filter.GroupPrints)
+        {
+            // The printing that stands for its card number: the first one that passes
+            // the per-printing filters (rarity and set can differ between an alt art
+            // and its base card; everything else a filter looks at cannot).
+            var rep = new List<string> { "g.base_id = c.base_id" };
+            if (!string.IsNullOrEmpty(filter.Rarity)) rep.Add("g.rarity = @rarity");
+            if (!string.IsNullOrEmpty(filter.SetLabel)) rep.Add("g.set_label = @set_label");
+            where.Add($"c.card_id = (SELECT MIN(g.card_id) FROM catalog g WHERE {string.Join(" AND ", rep)})");
+            ownedJoin = $"""
+                (SELECT kc.base_id, SUM(kk.qty) AS qty
+                 FROM {scopeRows} kk JOIN catalog kc ON kc.card_id = kk.card_id
+                 GROUP BY kc.base_id) k ON k.base_id = c.base_id
+                """;
+            printCount = ", (SELECT COUNT(*) FROM catalog pc WHERE pc.base_id = c.base_id) AS print_count";
+        }
+
         cmd.CommandText = $"""
-            SELECT {ListColumns}, COALESCE(k.qty, 0) AS qty, p.gbp AS price_gbp,
+            SELECT {ListColumns}, COALESCE(k.qty, 0) AS qty, p.gbp AS price_gbp{printCount},
                    {order.SelectColumns}
-            FROM catalog c LEFT JOIN {scope.Rows(cmd)} k ON k.card_id = c.card_id
+            FROM catalog c LEFT JOIN {ownedJoin}
                            LEFT JOIN prices p ON p.card_id = c.card_id
             {(where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "")}
             ORDER BY {order.OrderBy}
@@ -190,7 +211,50 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             ImageUrl = r.Str("image_url"),
             Qty = r.IntOr("qty"),
             PriceGbp = r.Real("price_gbp"),
+            PrintCount = filter.GroupPrints ? r.IntOr("print_count") : null,
         });
+    }
+
+    /// <summary>
+    /// Every printing of one card number - base, alt arts, reprints - for the print
+    /// picker, each with its own qty owned and price. Any printing's id will do.
+    /// </summary>
+    public List<SearchRow> Prints(BinderScope scope, string rawCardId)
+    {
+        var cid = CardId.Normalise(rawCardId) ?? rawCardId.ToUpperInvariant().Trim();
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT {ListColumns}, COALESCE(k.qty, 0) AS qty, p.gbp AS price_gbp
+            FROM catalog c LEFT JOIN {scope.Rows(cmd)} k ON k.card_id = c.card_id
+                           LEFT JOIN prices p ON p.card_id = c.card_id
+            WHERE c.base_id = @base
+            ORDER BY c.card_id
+            """;
+        cmd.Bind("@base", cid.Split('_')[0]);
+        var rows = new List<SearchRow>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            rows.Add(new SearchRow
+            {
+                CardId = r.Text("card_id"),
+                BaseId = r.Text("base_id"),
+                Variant = r.Text("variant"),
+                Name = r.Text("name"),
+                SetLabel = r.Str("set_label"),
+                SetName = r.Str("set_name"),
+                Rarity = r.Str("rarity"),
+                Category = r.Str("category"),
+                Colors = r.Str("colors"),
+                Cost = r.Int("cost"),
+                Power = r.Int("power"),
+                Counter = r.Int("counter"),
+                Types = r.Str("types"),
+                ImageUrl = r.Str("image_url"),
+                Qty = r.IntOr("qty"),
+                PriceGbp = r.Real("price_gbp"),
+            });
+        return rows;
     }
 
     /// <summary>

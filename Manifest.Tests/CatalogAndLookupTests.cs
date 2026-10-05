@@ -44,6 +44,50 @@ public class CatalogAndLookupTests(ServerFixture server)
     }
 
     [Fact]
+    public async Task ListsEveryPrintOfACardNumber()
+    {
+        // Any printing's id finds the whole family, base printing first.
+        var prints = (await server.Get("/api/prints/OP01-016_p1")).GetProperty("prints")
+                                                                  .EnumerateArray().ToArray();
+        Assert.True(prints.Length >= 8, $"expected at least 8 printings, got {prints.Length}");
+        Assert.Equal("OP01-016", prints[0].GetProperty("card_id").GetString());
+        Assert.All(prints, p => Assert.Equal("OP01-016", p.GetProperty("base_id").GetString()));
+    }
+
+    [Fact]
+    public async Task GroupedSearchShowsOneRowPerCardNumber()
+    {
+        var items = (await server.Get("/api/search?q=OP01-016&group=prints&cursor="))
+            .GetProperty("items").EnumerateArray().ToArray();
+        var one = Assert.Single(items);
+        Assert.Equal("OP01-016", one.GetProperty("card_id").GetString());
+        Assert.True(one.GetProperty("print_count").GetInt32() >= 8);
+
+        // Name searches fold too: no card number appears twice.
+        var named = (await server.Get("/api/search?q=nami&group=prints&cursor=&limit=200"))
+            .GetProperty("items").EnumerateArray().Select(x => x.GetProperty("base_id").GetString())
+            .ToArray();
+        Assert.NotEmpty(named);
+        Assert.Equal(named.Length, named.Distinct().Count());
+    }
+
+    [Fact]
+    public async Task GroupedSearchStillFindsAnAltArtByItsOwnRarity()
+    {
+        // The representative printing is the first that passes the filters, so a
+        // rarity only an alt art has still surfaces that card, shown as the alt art.
+        var all = (await server.Get("/api/prints/OP01-016")).GetProperty("prints").EnumerateArray()
+                                                            .ToArray();
+        var altOnly = all.Select(p => p.GetProperty("rarity").GetString())
+                         .FirstOrDefault(r => r != all[0].GetProperty("rarity").GetString());
+        if (altOnly is null) return;
+        var items = (await server.Get($"/api/search?q=OP01-016&group=prints&cursor=&rarity={altOnly}"))
+            .GetProperty("items").EnumerateArray().ToArray();
+        var one = Assert.Single(items);
+        Assert.Equal(altOnly, one.GetProperty("rarity").GetString());
+    }
+
+    [Fact]
     public async Task SearchesByName()
     {
         var r = Results(await server.Get("/api/search?q=nami"));
