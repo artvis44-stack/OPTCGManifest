@@ -366,6 +366,78 @@ public sealed class DeckRepository : IDeckRepository
         return Detail(conn, userId, deckId);
     }
 
+    /// <summary>
+    /// Moves every copy of one printing in the deck onto another printing of the same
+    /// card number - "play the alt art instead" - in one step, so the deck never
+    /// briefly holds both.
+    /// </summary>
+    public DeckDetail? SwapPrint(long userId, long deckId, string fromCardId, string toCardId)
+    {
+        using var conn = _db.Open();
+        var from = CardRepository.CatalogRowById(conn, fromCardId)
+                   ?? throw new RuleViolation("unknown card");
+        var to = CardRepository.CatalogRowById(conn, toCardId)
+                 ?? throw new RuleViolation("unknown card");
+        if (from.BaseId != to.BaseId)
+            throw new RuleViolation("those are different cards, not two prints of one card");
+        if (DeckAnalysis.IsLeader(to))
+            throw new RuleViolation("leaders go in the leader slot, not the card list");
+
+        using (var tx = conn.BeginTransaction())
+        {
+            using (var exists = conn.CreateCommand())
+            {
+                exists.CommandText =
+                    $"SELECT 1 FROM decks WHERE id = @id AND user_id = @user{_db.Dialect.ForUpdate}";
+                exists.Bind("@id", deckId);
+                exists.Bind("@user", userId);
+                if (exists.ExecuteScalar() is null) return null;
+            }
+
+            int moving;
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = "SELECT qty FROM deck_cards WHERE deck_id = @deck AND card_id = @card";
+                cmd.Bind("@deck", deckId);
+                cmd.Bind("@card", from.CardId);
+                moving = Convert.ToInt32(cmd.ExecuteScalar() ?? 0);
+            }
+
+            if (moving > 0 && from.CardId != to.CardId)
+            {
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = "DELETE FROM deck_cards WHERE deck_id = @deck AND card_id = @card";
+                    cmd.Bind("@deck", deckId);
+                    cmd.Bind("@card", from.CardId);
+                    cmd.ExecuteNonQuery();
+                }
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = """
+                        INSERT INTO deck_cards (deck_id, card_id, qty) VALUES (@deck,@card,@qty)
+                        ON CONFLICT(deck_id, card_id) DO UPDATE SET qty = deck_cards.qty + excluded.qty
+                        """;
+                    cmd.Bind("@deck", deckId);
+                    cmd.Bind("@card", to.CardId);
+                    cmd.Bind("@qty", moving);
+                    cmd.ExecuteNonQuery();
+                }
+                using (var touch = conn.CreateCommand())
+                {
+                    touch.CommandText =
+                        $"UPDATE decks SET updated_at = {_db.Dialect.Now} WHERE id = @id";
+                    touch.Bind("@id", deckId);
+                    touch.ExecuteNonQuery();
+                }
+            }
+
+            tx.Commit();
+        }
+
+        return Detail(conn, userId, deckId);
+    }
+
     public DeckDetail? SetCards(long userId, long deckId, IReadOnlyList<CardQuantity> cards)
     {
         using var conn = _db.Open();

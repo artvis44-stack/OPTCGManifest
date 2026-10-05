@@ -356,6 +356,59 @@ function cardViewHTML(c, o) {
   </div>`;
 }
 
+/* ---------- print picker ----------
+   Alt arts and reprints carry the same card number as the base card - it is the
+   art that differs - so the deck builder and the scan result both show one card
+   and let you choose which printing you mean. Which printings a number has never
+   changes while the page is open, so each family is fetched once. */
+const printFamilies = new Map();
+function printsOf(cardId) {
+  const base = String(cardId || '').split('_')[0];
+  if (!printFamilies.has(base))
+    printFamilies.set(base, api('/api/prints/' + encodeURIComponent(base))
+      .then(d => d.prints || [])
+      .catch(e => { printFamilies.delete(base); throw e; }));
+  return printFamilies.get(base);
+}
+
+const printLabel = p => p.variant || 'Base';
+
+// badge(p) adds a corner marker per printing, e.g. how many of it are in the deck.
+function printStripHTML(prints, selectedId, badge) {
+  if (!prints || prints.length < 2) return '';
+  return `<div class="prints">
+    <div class="prints-h">Prints <span>${prints.length}</span></div>
+    <div class="prints-row">${prints.map(p => {
+      const sub = [p.set_label, rarityShort(p.rarity)].filter(Boolean).join(' · ');
+      const price = fmtGBP(p.price_gbp);
+      return `<button type="button" class="print${p.card_id === selectedId ? ' on' : ''}"
+          data-print="${esc(p.card_id)}" title="${esc(p.card_id + ' · ' + printLabel(p))}"
+          aria-pressed="${p.card_id === selectedId}">
+        <img loading="lazy" alt="" src="/img/${encodeURIComponent(p.card_id)}">
+        <span class="print-lbl">${esc(printLabel(p))}</span>
+        ${sub ? `<span class="print-sub">${esc(sub)}</span>` : ''}
+        ${price ? `<span class="print-price">${esc(price)}</span>` : ''}
+        ${badge ? badge(p) : ''}
+      </button>`;
+    }).join('')}</div>
+  </div>`;
+}
+
+function wirePrintStrip(host, onPick) {
+  const row = host.querySelector('.prints-row');
+  const on = host.querySelector('.print.on');
+  // Keep the chosen printing in view when the strip is wider than the screen.
+  if (row && on) row.scrollLeft = on.offsetLeft - row.offsetLeft - 8;
+  host.querySelectorAll('[data-print]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    host.querySelectorAll('.print').forEach(x => {
+      x.classList.toggle('on', x === b);
+      x.setAttribute('aria-pressed', String(x === b));
+    });
+    onPick(b.dataset.print);
+  });
+}
+
 // Pointer tilt + specular sweep. The CSS custom properties live on .cv and are
 // read by .cv-frame, so the whole viewer stays in one transform context.
 function wireCardView(host, c) {

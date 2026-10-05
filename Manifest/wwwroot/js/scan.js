@@ -275,12 +275,15 @@ async function send(b64, variants) {
   say('');
   pending = r; pendQty = 1;
   const c = r.card || {card_id:r.card_id, name:'Not in catalogue'};
+  // An alt art prints the same number as its base card, so the number alone
+  // reads as the base printing; the print strip below lets you say which it is.
   $('#hit').innerHTML = `<div class="card-hit">
-    <img alt="" src="/img/${encodeURIComponent(r.card_id)}">
+    <img alt="" id="hitImg" src="/img/${encodeURIComponent(pending.card_id)}">
     <div>
-      <span class="cid">${esc(r.card_id)}</span>
+      <span class="cid" id="hitCid">${esc(pending.card_id)}</span>
       <h3>${esc(c.name || 'Not in catalogue')}</h3>
-      <div class="sm">${esc([c.set_label,c.rarity,c.variant].filter(Boolean).join(' · '))}</div>
+      <div class="sm" id="hitSub">${esc([c.set_label,c.rarity,c.variant].filter(Boolean).join(' · '))}</div>
+      <div id="hitPrints"></div>
       ${(r.confidence==='low'||r.note) ? `<div class="warn">${esc(r.note||'Low confidence — check the number.')}</div>`:''}
       ${!r.in_catalog ? `<div class="warn">Not in the catalogue. It will still be counted under this number.</div>`:''}
       <div class="act">
@@ -290,6 +293,7 @@ async function send(b64, variants) {
         <button id="logit">Log it</button>
       </div>
     </div></div>`;
+  if (r.card) showScanPrints(pending);
   $('#mns').onclick = () => { pendQty = Math.max(1,pendQty-1); $('#pn').textContent = pendQty; };
   $('#pls').onclick = () => { pendQty++; $('#pn').textContent = pendQty; };
   $('#logit').onclick = async () => {
@@ -300,6 +304,21 @@ async function send(b64, variants) {
     say(`${res.card_id} logged — ${res.qty} total. Next card.`);
     refreshTotals();
   };
+}
+function showScanPrints(hit) {
+  printsOf(hit.card_id).then(prints => {
+    const slot = $('#hitPrints');
+    if (!slot || pending !== hit) return;
+    slot.innerHTML = printStripHTML(prints, hit.card_id);
+    wirePrintStrip(slot, id => {
+      const p = prints.find(x => x.card_id === id);
+      if (!p) return;
+      hit.card_id = id;
+      $('#hitImg').src = '/img/' + encodeURIComponent(id);
+      $('#hitCid').textContent = id;
+      $('#hitSub').textContent = [p.set_label, p.rarity, p.variant].filter(Boolean).join(' · ');
+    });
+  }).catch(() => {});
 }
 async function awaitScan(id) {
   const until = Date.now() + 45000;

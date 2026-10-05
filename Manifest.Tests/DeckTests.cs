@@ -56,6 +56,33 @@ public class DeckTests(ServerFixture server)
     }
 
     [Fact]
+    public async Task SwappingAPrintMovesEveryCopy()
+    {
+        var (id, _) = await NewDeck();
+        try
+        {
+            await SetCard(id, "OP01-004", 3);
+            await SetCard(id, "OP01-004_p1", 1);
+            var (status, d) = await server.Post($"/api/decks/{id}/print",
+                                                new { from = "OP01-004", to = "OP01-004_p1" });
+            Assert.Equal(200, status);
+            var cards = d.GetProperty("deck").GetProperty("cards").EnumerateArray().ToArray();
+            var only = Assert.Single(cards);
+            Assert.Equal("OP01-004_p1", only.GetProperty("card_id").GetString());
+            Assert.Equal(4, only.GetProperty("qty").GetInt32());
+
+            // Two different card numbers are not two prints of one card.
+            (status, _) = await server.Post($"/api/decks/{id}/print",
+                                            new { from = "OP01-004_p1", to = "EB01-022" });
+            Assert.Equal(400, status);
+        }
+        finally
+        {
+            await server.Post($"/api/decks/{id}/delete", new { });
+        }
+    }
+
+    [Fact]
     public async Task CopyLimitCountsParallelsWithTheBasePrinting()
     {
         var (id, _) = await NewDeck();
