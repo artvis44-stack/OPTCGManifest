@@ -3,10 +3,11 @@ using Manifest.Data;
 namespace Manifest.Services.Jobs;
 
 /// <summary>
-/// The jobs nobody asks for: housekeeping every hour, and the catalogue and price
-/// refreshes on whatever interval MANIFEST_REFRESH_*_HOURS sets (off when unset,
-/// since both fetch from third-party sites). Every worker runs this; the key on
-/// each job names its time window, so between them they queue it once.
+/// The jobs nobody asks for: housekeeping every hour; new sets from the official
+/// card site and market prices daily unless MANIFEST_SCRAPE_CATALOG_HOURS and
+/// MANIFEST_REFRESH_PRICES_HOURS say otherwise ("off" turns either off); and the
+/// GitHub dataset only when MANIFEST_REFRESH_CATALOG_HOURS is set. Every worker runs
+/// this; the key on each job names its time window, so between them they queue it once.
 /// </summary>
 public sealed class JobSchedule
 {
@@ -28,6 +29,7 @@ public sealed class JobSchedule
         };
         if (config.RefreshPricesEvery is { } prices) _tasks.Add((JobTypes.RefreshPrices, prices));
         if (config.RefreshCatalogEvery is { } catalog) _tasks.Add((JobTypes.RefreshCatalog, catalog));
+        if (config.ScrapeCatalogEvery is { } sets) _tasks.Add((JobTypes.ScrapeCatalog, sets));
     }
 
     public async Task Run(CancellationToken stop)
@@ -79,6 +81,7 @@ public static class JobTypes
     public const string SendEmail = "SendEmail";
     public const string RefreshCatalog = "RefreshCatalog";
     public const string RefreshPrices = "RefreshPrices";
+    public const string ScrapeCatalog = "ScrapeCatalog";
     public const string PurgeExpiredSessions = "PurgeExpiredSessions";
     public const string PurgeExpiredAccessTokens = "PurgeExpiredAccessTokens";
     public const string PurgeFinishedJobs = "PurgeFinishedJobs";

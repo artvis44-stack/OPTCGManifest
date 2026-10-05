@@ -172,7 +172,7 @@ public sealed class JobQueueTests : IDisposable
     public void TheScheduleQueuesEachJobOncePerWindow(string store)
     {
         var (queue, clock) = Make(store);
-        var config = new AppConfig { RefreshPricesEvery = TimeSpan.FromHours(24) };
+        var config = new AppConfig { RefreshPricesEvery = TimeSpan.FromHours(24), ScrapeCatalogEvery = null };
         var a = new JobSchedule(queue, NullLogger<JobSchedule>.Instance, clock, config);
         var b = new JobSchedule(queue, NullLogger<JobSchedule>.Instance, clock, config);
 
@@ -188,6 +188,46 @@ public sealed class JobQueueTests : IDisposable
         clock.UtcNow += TimeSpan.FromHours(1);        // a new hour: the purges again
         a.Tick();
         Assert.Equal(3, Drain(queue).Count);
+    }
+
+    [SkippableTheory, MemberData(nameof(Stores))]
+    public void TheNewSetCheckIsScheduledDailyByDefaultAlongsidePrices(string store)
+    {
+        var (queue, clock) = Make(store);
+        var config = new AppConfig
+        {
+            RefreshPricesEvery = TimeSpan.FromHours(24),
+            ScrapeCatalogEvery = TimeSpan.FromHours(24),
+        };
+        new JobSchedule(queue, NullLogger<JobSchedule>.Instance, clock, config).Tick();
+        var queued = Drain(queue);
+        Assert.Contains("ScrapeCatalog", queued);
+        Assert.Contains("RefreshPrices", queued);
+        Assert.DoesNotContain("RefreshCatalog", queued);   // the old dataset would undo it
+    }
+
+    [SkippableTheory, MemberData(nameof(Stores))]
+    public void TheAdminPageSeesTheLatestRunOfAJobAndWhetherOneIsLive(string store)
+    {
+        var (queue, _) = Make(store);
+        Assert.Null(queue.Latest("ScrapeCatalog"));
+        Assert.Null(queue.LiveOfType("ScrapeCatalog"));
+
+        // A scheduled run and a press of the button have different keys; either one
+        // being live is what stops a second.
+        var scheduled = queue.Enqueue("ScrapeCatalog", new { }, dedupeKey: "schedule:ScrapeCatalog:1");
+        queue.Enqueue("RefreshPrices", new { });
+        Assert.Equal(scheduled, queue.LiveOfType("ScrapeCatalog"));
+
+        var job = queue.Claim()!;
+        Assert.Equal(scheduled, job.Id);
+        queue.Complete(job.Id, new { added = 12 });
+
+        Assert.Null(queue.LiveOfType("ScrapeCatalog"));
+        var latest = queue.Latest("ScrapeCatalog")!;
+        Assert.Equal("done", latest.Job.Status);
+        Assert.Contains("12", latest.Job.Result);
+        Assert.NotNull(latest.UpdatedAt);
     }
 
     static List<string> Drain(JobQueue queue)

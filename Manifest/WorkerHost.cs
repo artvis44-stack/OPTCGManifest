@@ -18,7 +18,7 @@ public static class WorkerHost
         the queue in the database named by MANIFEST_DATABASE_URL, until stopped.
         MANIFEST_WORKER_CONCURRENCY sets how many run at once (default 4).
 
-        manifest enqueue <refresh-prices|refresh-catalog|purge>
+        manifest enqueue <scrape-catalog|refresh-prices|refresh-catalog|purge>
 
         Queues one of the occasional jobs now, for whichever worker is running.
         """;
@@ -95,6 +95,7 @@ public static class WorkerHost
     {
         var types = args.FirstOrDefault() switch
         {
+            "scrape-catalog" => new[] { JobTypes.ScrapeCatalog },
             "refresh-prices" => new[] { JobTypes.RefreshPrices },
             "refresh-catalog" => new[] { JobTypes.RefreshCatalog },
             "purge" => new[] { JobTypes.PurgeExpiredSessions, JobTypes.PurgeExpiredAccessTokens,

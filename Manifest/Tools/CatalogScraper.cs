@@ -52,7 +52,9 @@ public static partial class CatalogScraper
     [GeneratedRegex(@"(?is)<h3\b[^>]*>.*?</h3>")] private static partial Regex H3Block();
     [GeneratedRegex(@"(?s)<[^>]+>")] private static partial Regex AnyTag();
     [GeneratedRegex(@"\s+")] private static partial Regex Spaces();
-    [GeneratedRegex(@"\[([A-Z]{2,4}-?\d{2})\]")] private static partial Regex LabelPattern();
+    // [OP-11], and the combined boosters' [OP14-EB04].
+    [GeneratedRegex(@"\[([A-Z]{2,4}-?\d{2}(?:-[A-Z]{2,4}-?\d{2})?)\]")]
+    private static partial Regex LabelPattern();
     [GeneratedRegex(@"^([A-Z][A-Z !'&\.]+?)\s*-")] private static partial Regex PrefixPattern();
     [GeneratedRegex(@"(?is)<select[^>]*\bid=""series""[^>]*>(.*?)</select>")]
     private static partial Regex SeriesSelect();
@@ -90,11 +92,30 @@ public static partial class CatalogScraper
         foreach (Match option in OptionTag().Matches(select.Groups[1].Value))
         {
             var value = option.Groups[1].Value;
-            var title = Spaces().Replace(WebUtility.HtmlDecode(option.Groups[2].Value), " ").Trim();
+            var title = CleanTitle(option.Groups[2].Value);
             if (value.Length > 0 && title.Length > 0)
                 packs.Add(new Pack(value, title));
         }
         return packs;
+    }
+
+    /// <summary>
+    /// A set title as text. Some carry a &lt;br class="spInline"&gt; for the site's phone
+    /// layout, which older scrapes kept, so a set name read "BOOSTER PACK &lt;br …&gt;-ROMANCE DAWN".
+    /// </summary>
+    public static string CleanTitle(string raw) =>
+        Spaces().Replace(WebUtility.HtmlDecode(AnyTag().Replace(raw, " ")), " ").Trim();
+
+    /// <summary>
+    /// Puts right a printing an older scrape filed under a set name with markup in it -
+    /// and, for the combined boosters, under the whole title in place of a label.
+    /// </summary>
+    public static void RepairSet(ScrapedCard card)
+    {
+        if (!card.SetName.Contains('<') && !card.SetLabel.Contains('<')) return;
+        var (_, title, label) = SplitTitle(CleanTitle(card.SetLabel.Contains('<') ? card.SetLabel : card.SetName));
+        if (card.SetLabel.Contains('<')) card.SetLabel = label ?? title;
+        card.SetName = title;
     }
 
     /// <summary>'BOOSTER PACK -Romance Dawn- [OP-01]' -> prefix, title, label.</summary>
@@ -238,11 +259,23 @@ public static partial class CatalogScraper
         throw new HttpRequestException($"too many redirects fetching {url}");
     }
 
+    /// <summary>What a scrape did, for a job's result and the admin page.</summary>
+    public sealed record Outcome(int Printings, int Added, IReadOnlyList<string> Fetched);
+
+    /// <summary>
+    /// The sets a --new run fetches: any whose label the catalogue does not have yet,
+    /// and the unlabelled lists (promotion cards, other products), which keep growing
+    /// without ever becoming a new set.
+    /// </summary>
+    public static List<Pack> NotYetHeld(IEnumerable<Pack> packs, IReadOnlySet<string> heldLabels) =>
+        packs.Where(p => p.Label is null || !heldLabels.Contains(p.Label)).ToList();
+
     public static async Task<int> Run(string[] args, AppPaths paths)
     {
         var only = new List<string>();
         var listOnly = false;
         var merge = false;
+        var newOnly = false;
         var pause = DefaultPause;
 
         for (var i = 0; i < args.Length; i++)
@@ -254,10 +287,28 @@ public static partial class CatalogScraper
                     break;
                 case "--list": listOnly = true; break;
                 case "--merge": merge = true; break;
+                case "--new": newOnly = true; break;
                 case "--pause": pause = TimeSpan.FromSeconds(double.Parse(args[++i])); break;
             }
         }
 
+        var outcome = await Scrape(paths, only, listOnly, merge, newOnly, pause);
+        if (outcome is null) return 1;
+        if (!listOnly) Console.WriteLine("\nnow run: manifest --reseed");
+        return 0;
+    }
+
+    /// <summary>
+    /// Sets that are already in catalog.json are skipped and everything else is merged in;
+    /// this is what the scheduled job and the admin page's button run. A handful of
+    /// requests when nothing is new, so it is fine to run daily.
+    /// </summary>
+    public static Task<Outcome?> ScrapeNew(AppPaths paths) =>
+        Scrape(paths, new List<string>(), listOnly: false, merge: true, newOnly: true, DefaultPause);
+
+    static async Task<Outcome?> Scrape(AppPaths paths, List<string> only, bool listOnly,
+                                       bool merge, bool newOnly, TimeSpan pause)
+    {
         using var http = NewClient();
         Console.WriteLine($"reading {CardList}");
         string doc;
@@ -269,7 +320,7 @@ public static partial class CatalogScraper
         {
             Console.Error.WriteLine($"could not reach the card site: {e.Message}\n"
                                     + "Check this machine's connection, then try again.");
-            return 1;
+            return null;
         }
 
         var packs = ParseSeries(doc);
@@ -278,7 +329,7 @@ public static partial class CatalogScraper
             Console.Error.WriteLine(
                 "no sets found on the page. The site's markup has probably changed;\n"
                 + "the bundled catalog.json still works, it is just older.");
-            return 1;
+            return null;
         }
 
         foreach (var p in packs)
@@ -292,7 +343,7 @@ public static partial class CatalogScraper
         {
             foreach (var p in packs)
                 Console.WriteLine($"  {(p.Label ?? "-"),-14} {p.Id,-8} {p.Title}");
-            return 0;
+            return new Outcome(0, 0, Array.Empty<string>());
         }
 
         var wanted = packs;
@@ -304,21 +355,32 @@ public static partial class CatalogScraper
             {
                 Console.Error.WriteLine($"none of {string.Join(", ", keep.Order())} are listed. "
                                         + "Run --list to see set labels.");
-                return 1;
+                return null;
             }
         }
 
         var rows = new Dictionary<string, ScrapedCard>();
-        if (merge && File.Exists(paths.Catalog))
+        if ((merge || newOnly) && File.Exists(paths.Catalog))
         {
             await using var stream = File.OpenRead(paths.Catalog);
             var existing = await System.Text.Json.JsonSerializer
                 .DeserializeAsync<List<ScrapedCard>>(stream, Json.Options) ?? new();
-            foreach (var r in existing) rows[r.CardId] = r;
+            foreach (var r in existing)
+            {
+                RepairSet(r);
+                rows[r.CardId] = r;
+            }
             Console.WriteLine($"starting from {rows.Count} existing printings");
         }
 
+        if (newOnly)
+        {
+            var held = rows.Values.Select(r => r.SetLabel).ToHashSet();
+            wanted = NotYetHeld(wanted, held);
+        }
+
         var added = 0;
+        var fetched = new List<string>();
         for (var i = 0; i < wanted.Count; i++)
         {
             var p = wanted[i];
@@ -341,6 +403,7 @@ public static partial class CatalogScraper
                 if (!rows.ContainsKey(c.CardId)) added++;
                 rows[c.CardId] = c;
             }
+            if (cards.Count > 0) fetched.Add(p.Label ?? p.Title ?? p.Id);
             Console.WriteLine($"  [{i + 1}/{wanted.Count}] {label,-14} {cards.Count,4} cards");
             await Task.Delay(pause);
         }
@@ -348,11 +411,13 @@ public static partial class CatalogScraper
         if (rows.Count == 0)
         {
             Console.Error.WriteLine("nothing scraped; catalog.json left untouched");
-            return 1;
+            return null;
         }
 
         var output = rows.Values.OrderBy(r => r.CardId, StringComparer.Ordinal).ToList();
-        var tmp = paths.Catalog + ".part";
+        // Unique, so a scheduled run and one from the admin page cannot trip over
+        // each other's half-written file; the move is what makes it visible.
+        var tmp = $"{paths.Catalog}.{Guid.NewGuid():N}.part";
         await using (var stream = File.Create(tmp))
             await System.Text.Json.JsonSerializer.SerializeAsync(stream, output, Json.Options);
         File.Move(tmp, paths.Catalog, overwrite: true);
@@ -361,7 +426,6 @@ public static partial class CatalogScraper
                          .Distinct().Order(StringComparer.Ordinal);
         Console.WriteLine($"\nwrote catalog.json — {output.Count} printings, {added} new");
         Console.WriteLine("sets: " + string.Join(", ", sets));
-        Console.WriteLine("\nnow run: manifest --reseed");
-        return 0;
+        return new Outcome(output.Count, added, fetched);
     }
 }
