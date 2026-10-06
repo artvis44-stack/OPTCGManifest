@@ -16,6 +16,7 @@ public interface ICardRepository
     List<CollectionRow> Collection(BinderScope scope);
     CardDetailRow? CardDetail(BinderScope scope, string rawCardId);
     List<SearchRow> Prints(BinderScope scope, string rawCardId);
+    (int From, int To) ChangePrint(long binderId, long actorId, string rawFrom, string rawTo, int qty);
     Stats Stats(BinderScope scope);
     AdjustResult Adjust(long binderId, long actorId, string rawCardId, int? delta, int? qty,
                         string? note);

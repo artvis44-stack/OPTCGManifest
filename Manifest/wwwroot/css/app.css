@@ -674,3 +674,9 @@ button.ghost.danger:hover{border-color:var(--red);color:var(--red-hi);background
 .card-hit .print.on img{border-color:#8C2F27;box-shadow:none}
 #leaderPrints .prints{margin-top:10px}
 .card-hit > div{min-width:0;flex:1}
+.print-own{position:absolute;top:4px;left:4px;font-family:var(--mono);font-weight:700;
+  font-size:10px;line-height:1.6;padding:0 5px;border-radius:5px;
+  background:rgba(3,18,26,.85);color:var(--foam)}
+.print-change{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.print-change .lbl{flex:1 1 100%;font-family:var(--mono);font-size:10px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--dim)}

@@ -19,7 +19,7 @@ public static class Endpoints
         "/api/access/invite", "/api/access/requests",
         "/api/access/requests/<id>/approve", "/api/access/requests/<id>/deny",
         "/api/search", "/api/facets", "/api/card/<card-id>", "/api/prints/<card-id>",
-        "/api/collection", "/api/collection/bulk", "/api/collection/stats", "/api/stats",
+        "/api/collection", "/api/collection/bulk", "/api/collection/print", "/api/collection/stats", "/api/stats",
         "/api/export.csv",
         "/api/decks", "/api/decks/<id>", "/api/decks/<id>/card",
         "/api/decks/<id>/cards", "/api/decks/<id>/print", "/api/decks/<id>/delete", "/api/scan", "/api/scan/<id>",
@@ -317,6 +317,26 @@ public static class Endpoints
             if (await BinderEndpoints.WriteBinder(ctx, binders) is not { } binder) return;
             await ctx.Json(200, cards.Adjust(binder, ctx.UserId(), body.CardId, body.Delta,
                                              body.Qty, body.Note));
+        });
+
+        app.MapPost("/api/collection/print", async ctx =>
+        {
+            var body = await Body<CollectionPrintPost>(ctx);
+            if (string.IsNullOrEmpty(body.From) || string.IsNullOrEmpty(body.To))
+            {
+                await ctx.Json(400, new { error = "from and to required" });
+                return;
+            }
+            if (await BinderEndpoints.WriteBinder(ctx, binders) is not { } binder) return;
+            try
+            {
+                var (from, to) = cards.ChangePrint(binder, ctx.UserId(), body.From, body.To, body.Qty ?? 1);
+                await ctx.Json(200, new { from_qty = from, to_qty = to });
+            }
+            catch (ArgumentException e)
+            {
+                await ctx.Json(400, new { error = e.Message });
+            }
         });
 
         app.MapPost("/api/collection/bulk", async ctx =>
