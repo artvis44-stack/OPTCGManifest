@@ -15,9 +15,20 @@ namespace Manifest.Tools;
 /// </summary>
 public static partial class CatalogScraper
 {
-    const string Host = "https://en.onepiece-cardgame.com";
-    // Trailing slash matters: /cardlist redirects to /cardlist/ over plain http.
-    const string CardList = Host + "/cardlist/";
+    /// <summary>
+    /// One language's edition of the card site, and the file its scrape is kept in.
+    /// The Japanese site is the same markup on another host; what it says inside the
+    /// fields is Japanese, which <see cref="Services.JapanesePrints"/> deals with at seeding.
+    /// </summary>
+    public sealed record Site(string Code, string Host, string FileName)
+    {
+        // Trailing slash matters: /cardlist redirects to /cardlist/ over plain http.
+        public string CardList => Host + "/cardlist/";
+        public string PathIn(AppPaths paths) => Path.Combine(paths.Root, FileName);
+    }
+
+    public static readonly Site English = new("en", "https://en.onepiece-cardgame.com", "catalog.json");
+    public static readonly Site Japanese = new("jp", "https://www.onepiece-cardgame.com", "catalog-jp.json");
     const string UserAgent =
         "Mozilla/5.0 (compatible; Manifest/1.0; self-hosted collection tracker)";
     static readonly TimeSpan DefaultPause = TimeSpan.FromSeconds(1.5);
@@ -52,8 +63,8 @@ public static partial class CatalogScraper
     [GeneratedRegex(@"(?is)<h3\b[^>]*>.*?</h3>")] private static partial Regex H3Block();
     [GeneratedRegex(@"(?s)<[^>]+>")] private static partial Regex AnyTag();
     [GeneratedRegex(@"\s+")] private static partial Regex Spaces();
-    // [OP-11], and the combined boosters' [OP14-EB04].
-    [GeneratedRegex(@"\[([A-Z]{2,4}-?\d{2}(?:-[A-Z]{2,4}-?\d{2})?)\]")]
+    // [OP-11], and the combined boosters' [OP14-EB04]; the Japanese site writes 【OP-11】.
+    [GeneratedRegex(@"[\[【]([A-Z]{2,4}-?\d{2}(?:-[A-Z]{2,4}-?\d{2})?)[\]】]")]
     private static partial Regex LabelPattern();
     [GeneratedRegex(@"^([A-Z][A-Z !'&\.]+?)\s*-")] private static partial Regex PrefixPattern();
     [GeneratedRegex(@"(?is)<select[^>]*\bid=""series""[^>]*>(.*?)</select>")]
@@ -141,8 +152,9 @@ public static partial class CatalogScraper
     }
 
     /// <summary>Each card is a &lt;dl id="OP01-016" ...&gt; … &lt;/dl&gt; block.</summary>
-    public static List<ScrapedCard> ParseCards(string doc)
+    public static List<ScrapedCard> ParseCards(string doc, string? host = null)
     {
+        host ??= English.Host;
         var out_ = new List<ScrapedCard>();
 
         foreach (Match block in DlBlock().Matches(doc))
@@ -178,9 +190,9 @@ public static partial class CatalogScraper
             if (i.Success)
             {
                 var src = i.Groups[1].Value;
-                img = src.StartsWith('.') ? Host + "/" + src.TrimStart('.', '/')
+                img = src.StartsWith('.') ? host + "/" + src.TrimStart('.', '/')
                     : src.StartsWith("http") ? src
-                    : Host + "/" + src.TrimStart('/');
+                    : host + "/" + src.TrimStart('/');
             }
 
             var colors = Regex.Split(Field("color"), "[/,]")
@@ -222,12 +234,13 @@ public static partial class CatalogScraper
         return suffix;
     }
 
-    static HttpClient NewClient()
+    static HttpClient NewClient(Site site)
     {
         var http = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
         http.DefaultRequestHeaders.Add("User-Agent", UserAgent);
         http.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml");
-        http.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9");
+        http.DefaultRequestHeaders.Add("Accept-Language",
+                                       site == Japanese ? "ja-JP,ja;q=0.9" : "en-US,en;q=0.9");
         return http;
     }
 
@@ -277,6 +290,7 @@ public static partial class CatalogScraper
         var merge = false;
         var newOnly = false;
         var pause = DefaultPause;
+        var site = English;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -289,10 +303,15 @@ public static partial class CatalogScraper
                 case "--merge": merge = true; break;
                 case "--new": newOnly = true; break;
                 case "--pause": pause = TimeSpan.FromSeconds(double.Parse(args[++i])); break;
+                case "--lang":
+                    var lang = i + 1 < args.Length ? args[++i].ToLowerInvariant() : "";
+                    site = lang is "jp" or "ja" ? Japanese : lang is "en" ? English
+                        : throw new ArgumentException($"unknown --lang {lang}; use en or jp");
+                    break;
             }
         }
 
-        var outcome = await Scrape(paths, only, listOnly, merge, newOnly, pause);
+        var outcome = await Scrape(paths, site, only, listOnly, merge, newOnly, pause);
         if (outcome is null) return 1;
         if (!listOnly) Console.WriteLine("\nnow run: manifest --reseed");
         return 0;
@@ -303,18 +322,21 @@ public static partial class CatalogScraper
     /// this is what the scheduled job and the admin page's button run. A handful of
     /// requests when nothing is new, so it is fine to run daily.
     /// </summary>
-    public static Task<Outcome?> ScrapeNew(AppPaths paths) =>
-        Scrape(paths, new List<string>(), listOnly: false, merge: true, newOnly: true, DefaultPause);
+    public static Task<Outcome?> ScrapeNew(AppPaths paths, Site? site = null) =>
+        Scrape(paths, site ?? English, new List<string>(), listOnly: false, merge: true, newOnly: true,
+               DefaultPause);
 
-    static async Task<Outcome?> Scrape(AppPaths paths, List<string> only, bool listOnly,
+    static async Task<Outcome?> Scrape(AppPaths paths, Site site, List<string> only, bool listOnly,
                                        bool merge, bool newOnly, TimeSpan pause)
     {
-        using var http = NewClient();
-        Console.WriteLine($"reading {CardList}");
+        using var http = NewClient(site);
+        var file = site.PathIn(paths);
+        var cardList = site.CardList;
+        Console.WriteLine($"reading {cardList}");
         string doc;
         try
         {
-            doc = await GetHtml(http, CardList);
+            doc = await GetHtml(http, cardList);
         }
         catch (Exception e)
         {
@@ -360,9 +382,9 @@ public static partial class CatalogScraper
         }
 
         var rows = new Dictionary<string, ScrapedCard>();
-        if ((merge || newOnly) && File.Exists(paths.Catalog))
+        if ((merge || newOnly) && File.Exists(file))
         {
-            await using var stream = File.OpenRead(paths.Catalog);
+            await using var stream = File.OpenRead(file);
             var existing = await System.Text.Json.JsonSerializer
                 .DeserializeAsync<List<ScrapedCard>>(stream, Json.Options) ?? new();
             foreach (var r in existing)
@@ -388,8 +410,8 @@ public static partial class CatalogScraper
             List<ScrapedCard> cards;
             try
             {
-                var page = await GetHtml(http, $"{CardList}?series={p.Id}");
-                cards = ParseCards(page);
+                var page = await GetHtml(http, $"{cardList}?series={p.Id}");
+                cards = ParseCards(page, site.Host);
             }
             catch (Exception e)
             {
@@ -410,21 +432,21 @@ public static partial class CatalogScraper
 
         if (rows.Count == 0)
         {
-            Console.Error.WriteLine("nothing scraped; catalog.json left untouched");
+            Console.Error.WriteLine($"nothing scraped; {site.FileName} left untouched");
             return null;
         }
 
         var output = rows.Values.OrderBy(r => r.CardId, StringComparer.Ordinal).ToList();
         // Unique, so a scheduled run and one from the admin page cannot trip over
         // each other's half-written file; the move is what makes it visible.
-        var tmp = $"{paths.Catalog}.{Guid.NewGuid():N}.part";
+        var tmp = $"{file}.{Guid.NewGuid():N}.part";
         await using (var stream = File.Create(tmp))
             await System.Text.Json.JsonSerializer.SerializeAsync(stream, output, Json.Options);
-        File.Move(tmp, paths.Catalog, overwrite: true);
+        File.Move(tmp, file, overwrite: true);
 
         var sets = output.Select(r => r.SetLabel).Where(s => s.Length > 0)
                          .Distinct().Order(StringComparer.Ordinal);
-        Console.WriteLine($"\nwrote catalog.json — {output.Count} printings, {added} new");
+        Console.WriteLine($"\nwrote {site.FileName} — {output.Count} printings, {added} new");
         Console.WriteLine("sets: " + string.Join(", ", sets));
         return new Outcome(output.Count, added, fetched);
     }

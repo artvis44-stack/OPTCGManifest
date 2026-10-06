@@ -1,5 +1,5 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using Manifest.Data;
 
 namespace Manifest.Tools;
@@ -10,12 +10,21 @@ namespace Manifest.Tools;
 ///
 /// Safe to re-run anytime — run it on a schedule to keep prices current.
 /// </summary>
-public static class PriceRefresh
+public static partial class PriceRefresh
 {
-    static readonly string[] CardSources =
+    /// <summary>
+    /// Where prices come from, most trusted first. A card number's plain id is shared
+    /// between its own set, the starter decks that reprint it and the promos that
+    /// reuse it, so the order decides who gets first claim on it - see Match().
+    /// </summary>
+    static readonly (string Source, string[] Urls)[] CardSources =
     {
-        "https://optcgapi.com/api/allSetCards/",
-        "https://optcgapi.com/api/allSTCards/",
+        ("set", new[] { "https://optcgapi.com/api/allSetCards/" }),
+        ("deck", new[] { "https://optcgapi.com/api/allSTCards/" }),
+        // The documentation names allPromoCards; other clients report it answering
+        // 404 while allPromos works, so the second is tried when the first fails.
+        ("promo", new[] { "https://optcgapi.com/api/allPromoCards/",
+                          "https://optcgapi.com/api/allPromos/" }),
     };
     const string FxUrl = "https://api.frankfurter.dev/v1/latest?base=USD&symbols=GBP";
 
@@ -24,16 +33,142 @@ public static class PriceRefresh
         public Dictionary<string, double> Rates { get; set; } = new();
     }
 
-    sealed class PricedCard
-    {
-        [JsonPropertyName("card_image_id")] public string? CardImageId { get; set; }
-        [JsonPropertyName("market_price")] public double? MarketPrice { get; set; }
-    }
+    /// <summary>One priced row from optcgapi.com, as far as matching needs it.</summary>
+    public sealed record ApiCard(string Source, string ImageId, string? SetId, string? Name, double Usd);
+
+    /// <summary>One printing in the local catalogue.</summary>
+    public sealed record CatalogPrint(string CardId, string BaseId, string? SetLabel);
 
     static readonly JsonSerializerOptions Upstream = new()
     {
         PropertyNameCaseInsensitive = true,
     };
+
+    [GeneratedRegex(@"(?:OP|ST|EB|PRB)-?\d{2}")]
+    private static partial Regex SetCode();
+
+    /// <summary>"OP-03", "OP03", "OP14-EB04" -> {"OP03"}, {"OP03"}, {"OP14","EB04"}.</summary>
+    static HashSet<string> SetCodes(string? set) =>
+        SetCode().Matches((set ?? "").ToUpperInvariant())
+                 .Select(m => m.Value.Replace("-", "")).ToHashSet();
+
+    static bool IsPromoLabel(string? label) =>
+        (label ?? "").Contains("promo", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>"op01-016_P1 " -> "OP01-016_p1": the catalogue's own spelling.</summary>
+    public static string CanonicalId(string raw)
+    {
+        var parts = raw.Trim().Split('_', 2);
+        return parts.Length == 1 ? parts[0].ToUpperInvariant()
+            : parts[0].ToUpperInvariant() + "_" + parts[1].ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// A row read field by field rather than deserialised whole, so one odd value
+    /// (a price sent as text, or as "") costs that card and not the whole source.
+    /// market_price is preferred; inventory_price stands in when it is missing.
+    /// </summary>
+    public static ApiCard? Parse(JsonElement e, string source)
+    {
+        if (e.ValueKind != JsonValueKind.Object) return null;
+        string? Text(string name) =>
+            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        double? Price(string name)
+        {
+            if (!e.TryGetProperty(name, out var v)) return null;
+            if (v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d)) return d > 0 ? d : null;
+            if (v.ValueKind == JsonValueKind.String
+                && double.TryParse(v.GetString(), System.Globalization.NumberStyles.Float,
+                                   System.Globalization.CultureInfo.InvariantCulture, out var t))
+                return t > 0 ? t : null;
+            return null;
+        }
+
+        var id = Text("card_image_id");
+        if (string.IsNullOrWhiteSpace(id)) return null;
+        var usd = Price("market_price") ?? Price("inventory_price");
+        if (usd is null) return null;
+        // set_name too: a set code may only be spelled out there ("... [OP-03]").
+        var set = string.Join(" ", new[] { Text("set_id"), Text("set_name") }.Where(t => t is not null));
+        return new ApiCard(source, CanonicalId(id), set.Length > 0 ? set : null, Text("card_name"),
+                           usd.Value);
+    }
+
+    /// <summary>
+    /// Which catalogue printing each optcgapi.com price belongs to.
+    ///
+    /// optcgapi.com's card_image_id is not unique. A starter deck's reprint of
+    /// OP03-003 and a promo reusing OP14-033 both carry the plain number of the set
+    /// card, and so does a variant like "Kingdew (Pandaman Art)". Read straight into
+    /// a dictionary, whichever came last overwrote the set card's price, and the
+    /// catalogue's own rows for those printings (OP03-003_r1 in ST-15, the promo's
+    /// _pN) never got one. So:
+    ///
+    ///   1. An id with a suffix (_p1, _r1) is the official site's own id for one
+    ///      printing - take it as is. A plain id is taken only when the set agrees.
+    ///   2. Otherwise, the one unpriced printing of that number in that set (for a
+    ///      promo, the one printing labelled as a promotion card), if exactly one.
+    ///   3. Otherwise a plain id still lands on its own number when neither side says
+    ///      which set it is in, so a missing set_id loses nothing against before.
+    ///
+    /// Sources are taken set, then starter deck, then promo; within one, a plain
+    /// name before a name with a "(...)" variant note. Each printing is priced once.
+    /// Ids not in the catalogue keep their price under their own id, for cards
+    /// logged by number before the catalogue knew them.
+    /// </summary>
+    public static Dictionary<string, double> Match(IReadOnlyList<ApiCard> api,
+                                                   IReadOnlyList<CatalogPrint> catalog)
+    {
+        var byId = catalog.ToDictionary(c => c.CardId, StringComparer.Ordinal);
+        var byBase = catalog.GroupBy(c => c.BaseId).ToDictionary(g => g.Key, g => g.ToList());
+        var rank = new Dictionary<string, int> { ["set"] = 0, ["deck"] = 1, ["promo"] = 2 };
+        var ordered = api
+            .Select((card, i) => (card, i))
+            .OrderBy(x => rank.GetValueOrDefault(x.card.Source, 3))
+            .ThenBy(x => (x.card.Name ?? "").Contains('(') ? 1 : 0)
+            .ThenBy(x => x.i)
+            .Select(x => x.card)
+            .ToList();
+
+        var priced = new Dictionary<string, double>(StringComparer.Ordinal);
+        var used = new HashSet<ApiCard>(ReferenceEqualityComparer.Instance);
+
+        bool SetAgrees(ApiCard a, CatalogPrint c)
+        {
+            if (a.Source == "promo" && IsPromoLabel(c.SetLabel)) return true;
+            return SetCodes(a.SetId).Overlaps(SetCodes(c.SetLabel));
+        }
+
+        void Take(ApiCard a, CatalogPrint c)
+        {
+            priced[c.CardId] = a.Usd;
+            used.Add(a);
+        }
+
+        foreach (var a in ordered)
+        {
+            if (!byId.TryGetValue(a.ImageId, out var c) || priced.ContainsKey(c.CardId)) continue;
+            if (a.ImageId.Contains('_') || SetAgrees(a, c)) Take(a, c);
+        }
+
+        foreach (var a in ordered.Where(a => !used.Contains(a)))
+        {
+            if (!byBase.TryGetValue(a.ImageId.Split('_')[0], out var family)) continue;
+            var open = family.Where(c => !priced.ContainsKey(c.CardId) && SetAgrees(a, c)).ToList();
+            if (open.Count == 1) Take(a, open[0]);
+        }
+
+        foreach (var a in ordered.Where(a => !used.Contains(a)))
+        {
+            if (!byId.TryGetValue(a.ImageId, out var c) || priced.ContainsKey(c.CardId)) continue;
+            if (SetCodes(a.SetId).Count == 0 || SetCodes(c.SetLabel).Count == 0) Take(a, c);
+        }
+
+        foreach (var a in ordered.Where(a => !used.Contains(a)))
+            if (!byId.ContainsKey(a.ImageId)) priced.TryAdd(a.ImageId, a.Usd);
+
+        return priced;
+    }
 
     public static async Task<int> Run(AppPaths paths, Database db)
     {
@@ -61,30 +196,30 @@ public static class PriceRefresh
         }
         Console.WriteLine($"USD/GBP rate: {rate}");
 
-        var rows = new Dictionary<string, (string Id, double Usd, double Gbp)>();
-        foreach (var url in CardSources)
+        var api = new List<ApiCard>();
+        foreach (var (source, urls) in CardSources)
         {
-            List<PricedCard> cards;
-            try
+            foreach (var url in urls)
             {
-                cards = JsonSerializer.Deserialize<List<PricedCard>>(
-                    await http.GetStringAsync(url), Upstream) ?? new();
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine($"  skipped {url}: {e.Message}");
-                continue;
-            }
-            foreach (var c in cards)
-            {
-                if (string.IsNullOrEmpty(c.CardImageId) || c.MarketPrice is null) continue;
-                rows[c.CardImageId] = (c.CardImageId, c.MarketPrice.Value,
-                                       Math.Round(c.MarketPrice.Value * rate, 2,
-                                                  MidpointRounding.ToEven));
+                try
+                {
+                    using var doc = JsonDocument.Parse(await http.GetStringAsync(url));
+                    if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                        throw new FormatException("not a list of cards");
+                    var before = api.Count;
+                    foreach (var e in doc.RootElement.EnumerateArray())
+                        if (Parse(e, source) is { } card) api.Add(card);
+                    Console.WriteLine($"  {url}: {api.Count - before} priced cards");
+                    break;
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine($"  skipped {url}: {e.Message}");
+                }
             }
         }
 
-        if (rows.Count == 0)
+        if (api.Count == 0)
         {
             Console.Error.WriteLine(
                 "got no price data — optcgapi.com may be down or have changed shape");
@@ -92,6 +227,21 @@ public static class PriceRefresh
         }
 
         using var conn = db.Open();
+        var catalog = new List<CatalogPrint>();
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "SELECT card_id, base_id, set_label FROM catalog";
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+                catalog.Add(new CatalogPrint(r.GetString(0), r.GetString(1),
+                                             r.IsDBNull(2) ? null : r.GetString(2)));
+        }
+
+        var rows = Match(api, catalog).ToDictionary(
+            kv => kv.Key,
+            kv => (Id: kv.Key, Usd: kv.Value,
+                   Gbp: Math.Round(kv.Value * rate, 2, MidpointRounding.ToEven)));
+
         // An old SQLite file may predate the prices table. PostgreSQL's comes from
         // the migrations, like every other table there.
         if (!db.Dialect.IsPostgres)
@@ -125,15 +275,10 @@ public static class PriceRefresh
             tx.Commit();
         }
 
-        var known = new HashSet<string>();
-        using (var cmd = conn.CreateCommand())
-        {
-            cmd.CommandText = "SELECT card_id FROM catalog";
-            using var r = cmd.ExecuteReader();
-            while (r.Read()) known.Add(r.GetString(0));
-        }
+        var known = catalog.Select(c => c.CardId).ToHashSet();
         var matched = rows.Keys.Count(known.Contains);
-        Console.WriteLine($"priced {rows.Count} printings ({matched} match cards in your catalog)");
+        Console.WriteLine($"priced {rows.Count} printings ({matched} of the {known.Count} "
+                          + "in your catalog)");
         return 0;
     }
 }

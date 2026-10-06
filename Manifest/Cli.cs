@@ -20,7 +20,8 @@ public static class Cli
         Subcommands:
           user               add, list, delete accounts and change passwords
           scrape             rebuild catalog.json from the official card site
-                             (--new: only add sets it does not have yet)
+                             (--new: only add sets it does not have yet;
+                             --lang jp: Japanese prints, into catalog-jp.json)
           refresh-catalog    rebuild catalog.json from the vegapull-records dataset
           refresh-prices     pull market prices into the database
           migrate-sqlite     copy a manifest.db into PostgreSQL, once

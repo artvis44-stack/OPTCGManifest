@@ -216,8 +216,9 @@ public sealed class CardRepository : ICardRepository, IScanRepository
     }
 
     /// <summary>
-    /// Every printing of one card number - base, alt arts, reprints - for the print
-    /// picker, each with its own qty owned and price. Any printing's id will do.
+    /// Every printing of one card number - base, alt arts, reprints, then the Japanese
+    /// printings - for the print picker, each with its own qty owned and price. Any
+    /// printing's id will do.
     /// </summary>
     public List<SearchRow> Prints(BinderScope scope, string rawCardId)
     {
@@ -229,7 +230,7 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             FROM catalog c LEFT JOIN {scope.Rows(cmd)} k ON k.card_id = c.card_id
                            LEFT JOIN prices p ON p.card_id = c.card_id
             WHERE c.base_id = @base
-            ORDER BY c.card_id
+            ORDER BY CASE WHEN c.variant LIKE '%Japanese' THEN 1 ELSE 0 END, c.card_id
             """;
         cmd.Bind("@base", cid.Split('_')[0]);
         var rows = new List<SearchRow>();
