@@ -523,6 +523,91 @@ public sealed class CardRepository : ICardRepository, IScanRepository
     /// shared binder, may be two people. <paramref name="actorId"/> is recorded as
     /// who added a card the binder did not have yet.
     /// </summary>
+    /// <summary>
+    /// Re-files copies in one binder from one printing to another printing of the same
+    /// card number - "this one is actually the alt art" - in one step, so the count
+    /// never dips or doubles in between. The note travels with them.
+    /// </summary>
+    public (int From, int To) ChangePrint(long binderId, long actorId, string rawFrom, string rawTo,
+                                          int qty)
+    {
+        var from = CardId.Normalise(rawFrom) ?? rawFrom.ToUpperInvariant().Trim();
+        var to = CardId.Normalise(rawTo) ?? rawTo.ToUpperInvariant().Trim();
+        if (qty < 1) throw new ArgumentException("Change at least one copy.");
+        if (from == to) throw new ArgumentException("That is already the print it is.");
+
+        using var conn = _db.Open();
+        var target = CatalogRowById(conn, to) ?? throw new ArgumentException($"{to} is not in the catalogue.");
+        if (target.BaseId != from.Split('_')[0])
+            throw new ArgumentException($"{to} is a different card, not another print of {from}.");
+
+        using var tx = conn.BeginTransaction();
+        int have;
+        string note;
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "SELECT qty, note FROM collection WHERE binder_id = @b AND card_id = @id"
+                              + _db.Dialect.ForUpdate;
+            cmd.Bind("@b", binderId);
+            cmd.Bind("@id", from);
+            using var r = cmd.ExecuteReader();
+            if (!r.Read()) throw new ArgumentException($"There is no {from} in this binder.");
+            have = r.IntOr("qty");
+            note = r.Text("note");
+        }
+        var moving = Math.Min(qty, have);
+        if (moving < 1) throw new ArgumentException($"There is no {from} in this binder.");
+
+        var now = _db.Dialect.Now;
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = $"""
+                UPDATE collection SET qty = qty - @n, updated_at = {now}
+                WHERE binder_id = @b AND card_id = @from
+                """;
+            cmd.Bind("@n", moving);
+            cmd.Bind("@b", binderId);
+            cmd.Bind("@from", from);
+            cmd.ExecuteNonQuery();
+        }
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM collection WHERE binder_id = @b AND card_id = @from AND qty <= 0";
+            cmd.Bind("@b", binderId);
+            cmd.Bind("@from", from);
+            cmd.ExecuteNonQuery();
+        }
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = $"""
+                INSERT INTO collection (binder_id, card_id, qty, note, added_by)
+                VALUES (@b, @to, @n, @note, @actor)
+                ON CONFLICT (binder_id, card_id) DO UPDATE
+                  SET qty = collection.qty + excluded.qty,
+                      note = COALESCE(NULLIF(collection.note, ''), excluded.note),
+                      updated_at = {now}
+                """;
+            cmd.Bind("@b", binderId);
+            cmd.Bind("@to", target.CardId);
+            cmd.Bind("@n", moving);
+            cmd.Bind("@note", note);
+            cmd.Bind("@actor", actorId);
+            cmd.ExecuteNonQuery();
+        }
+
+        int Qty(string id)
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT qty FROM collection WHERE binder_id = @b AND card_id = @id";
+            cmd.Bind("@b", binderId);
+            cmd.Bind("@id", id);
+            return cmd.ExecuteScalar() is { } q and not DBNull ? Convert.ToInt32(q) : 0;
+        }
+        var result = (Qty(from), Qty(target.CardId));
+        tx.Commit();
+        return result;
+    }
+
     public AdjustResult Adjust(long binderId, long actorId, string rawCardId, int? delta, int? qty,
                                string? note)
     {

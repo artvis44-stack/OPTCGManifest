@@ -313,7 +313,7 @@ const collectionActs = c => `<div class="cv-act">
     <span class="n" data-qty>${c.qty || 0}</span>
     <button class="stepper" data-step="1" aria-label="One more">+</button>
     <span class="lbl">owned</span>
-  </div>${moveActs(c)}`;
+  </div>${moveActs(c)}<div data-print-acts></div>`;
 
 function cardViewHTML(c, o) {
   o = o || {};
@@ -445,6 +445,54 @@ function wireCollectionActs(host, c) {
     syncCardQty(c.card_id, r.qty);
   });
   wireMoveActs(host, c);
+  wirePrintActs(host, c);
+}
+
+// "This one is really the alt art": the owned card's other printings, each with
+// how many of it this binder holds, and a way to re-file copies onto one of them.
+function wirePrintActs(host, c) {
+  const slot = host.querySelector('[data-print-acts]');
+  if (!slot || !binderWritable() || !(c.qty > 0)) return;
+  const binder = BINDER === null ? '' : '?binder=' + encodeURIComponent(BINDER);
+  api('/api/prints/' + encodeURIComponent(c.card_id) + binder).then(d => {
+    const prints = d.prints || [];
+    if (!document.body.contains(slot) || prints.length < 2) return;
+    slot.innerHTML = printStripHTML(prints, c.card_id,
+        p => p.qty ? `<span class="print-own" title="owned">${p.qty}</span>` : '')
+      + `<div class="print-change" hidden></div>`;
+    const bar = slot.querySelector('.print-change');
+    wirePrintStrip(slot, id => {
+      if (id === c.card_id) { bar.hidden = true; return; }
+      const p = prints.find(x => x.card_id === id);
+      const n = c.qty || 0;
+      bar.hidden = false;
+      bar.innerHTML = `<span class="lbl">Change to ${esc(printLabel(p))}${
+          p.set_label ? ' · ' + esc(p.set_label) : ''}</span>
+        <button type="button" class="ghost" data-change="1">Change 1</button>
+        ${n > 1 ? `<button type="button" class="ghost" data-change="${n}">Change all ${n}</button>` : ''}`;
+      bar.scrollIntoView({block: 'nearest'});
+      bar.querySelectorAll('[data-change]').forEach(b => b.onclick = async () => {
+        bar.querySelectorAll('button').forEach(x => x.disabled = true);
+        try {
+          const r = await api('/api/collection/print', {method: 'POST',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify({from: c.card_id, to: id, qty: +b.dataset.change})});
+          syncCardQty(c.card_id, r.from_qty);
+          syncCardQty(id, r.to_qty);
+          refreshTotals();
+          if (!$('#paneOwn').hidden) loadOwned().catch(() => {});
+          // Show the print the copies went to, where the old one was showing.
+          const next = (await api('/api/card/' + encodeURIComponent(id))).card;
+          if (!next) return;
+          if (host.id === 'inspector') showInspector(next);
+          else openCardModal(next);
+        } catch (e) {
+          bar.querySelector('.lbl').textContent = e.message || 'Could not change it';
+          bar.querySelectorAll('button').forEach(x => x.disabled = false);
+        }
+      });
+    });
+  }).catch(() => {});
 }
 
 // The list endpoints leave out effect text to keep search fast; fetch it once the
