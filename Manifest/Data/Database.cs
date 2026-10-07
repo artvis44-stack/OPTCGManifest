@@ -181,7 +181,11 @@ public sealed class Database
             power     INTEGER,
             counter   INTEGER,
             types     TEXT,
+            attributes TEXT,
             effect    TEXT,
+            -- The card's [Trigger] box; "trigger" itself is an SQL keyword.
+            trigger_text TEXT,
+            block_icon INTEGER,
             image_url TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_catalog_base ON catalog(base_id);
@@ -411,6 +415,19 @@ public sealed class Database
             Console.WriteLine("migrated: collections now live in binders");
         }
 
+        // The Trigger box, the attribute icon and the block icon, which the first
+        // scrapers did not read. The rows stay empty until the catalogue is
+        // reseeded; Initialise does that by itself for a catalogue that has none.
+        if (!HasColumn(conn, "catalog", "trigger_text"))
+        {
+            Exec(conn, """
+                ALTER TABLE catalog ADD COLUMN attributes TEXT;
+                ALTER TABLE catalog ADD COLUMN trigger_text TEXT;
+                ALTER TABLE catalog ADD COLUMN block_icon INTEGER;
+                """);
+            Console.WriteLine("migrated: the catalogue can carry Trigger text and attributes");
+        }
+
         // Builds from before job priorities made the table without the column.
         if (!HasColumn(conn, "jobs", "priority"))
             Exec(conn, "ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0");
@@ -483,25 +500,43 @@ public sealed class Database
         using var tx = conn.BeginTransaction();
         Dialect.Lock(conn, "manifest:catalog-seed");
 
-        long have;
+        long have, triggers;
         using (var count = conn.CreateCommand())
         {
-            count.CommandText = "SELECT count(*) FROM catalog";
-            have = Convert.ToInt64(count.ExecuteScalar());
+            count.CommandText = "SELECT count(*), count(trigger_text) FROM catalog";
+            using var r = count.ExecuteReader();
+            r.Read();
+            have = r.GetInt64(0);
+            triggers = r.GetInt64(1);
         }
 
-        if (have != 0 && !forceReseed)
+        // A catalogue seeded before the Trigger column existed has it NULL on every
+        // row; one seeded since has '' on a card without a Trigger. Such a catalogue
+        // is reseeded once, but only when catalog.json has the triggers to fill it
+        // with - an older file would otherwise be read again on every start.
+        var predatesTriggers = have != 0 && triggers == 0;
+
+        if (have != 0 && !forceReseed && !predatesTriggers)
         {
             Console.WriteLine($"catalog ready: {have} printings");
             return null;
         }
 
         if (!File.Exists(_paths.Catalog))
-            return "catalog.json is missing. Run: manifest refresh-catalog";
+            return predatesTriggers && !forceReseed
+                ? null
+                : "catalog.json is missing. Run: manifest refresh-catalog";
 
         List<CatalogRow> rows;
         using (var stream = File.OpenRead(_paths.Catalog))
             rows = JsonSerializer.Deserialize<List<CatalogRow>>(stream, Json.Options) ?? new();
+
+        if (have != 0 && !forceReseed && !rows.Any(r => !string.IsNullOrEmpty(r.Trigger)))
+        {
+            Console.WriteLine($"catalog ready: {have} printings, without Trigger text "
+                              + "(catalog.json predates it)");
+            return null;
+        }
 
         // Japanese prints, when the site has been scraped for them, are seeded as
         // further printings of the same card numbers.
@@ -518,9 +553,11 @@ public sealed class Database
         insert.CommandText = """
             INSERT INTO catalog
               (card_id, base_id, variant, name, set_label, set_name, rarity,
-               category, colors, cost, power, counter, types, effect, image_url)
+               category, colors, cost, power, counter, types, attributes, effect,
+               trigger_text, block_icon, image_url)
             VALUES (@card_id,@base_id,@variant,@name,@set_label,@set_name,@rarity,
-                    @category,@colors,@cost,@power,@counter,@types,@effect,@image_url)
+                    @category,@colors,@cost,@power,@counter,@types,@attributes,@effect,
+                    @trigger_text,@block_icon,@image_url)
             """;
         // Untyped, so each provider infers from the value: SQLite would take text for
         // the numeric columns and convert it, PostgreSQL would refuse.
@@ -528,7 +565,7 @@ public sealed class Database
         {
             "@card_id", "@base_id", "@variant", "@name", "@set_label", "@set_name",
             "@rarity", "@category", "@colors", "@cost", "@power", "@counter",
-            "@types", "@effect", "@image_url",
+            "@types", "@attributes", "@effect", "@trigger_text", "@block_icon", "@image_url",
         }.Select(n => insert.Bind(n, null)).ToArray();
 
         foreach (var r in rows)
@@ -546,8 +583,11 @@ public sealed class Database
             p[10].Value = (object?)r.Power ?? DBNull.Value;
             p[11].Value = (object?)r.Counter ?? DBNull.Value;
             p[12].Value = (object?)r.Types ?? DBNull.Value;
-            p[13].Value = (object?)r.Effect ?? DBNull.Value;
-            p[14].Value = (object?)r.ImageUrl ?? DBNull.Value;
+            p[13].Value = (object?)r.Attributes ?? DBNull.Value;
+            p[14].Value = (object?)r.Effect ?? DBNull.Value;
+            p[15].Value = (object?)r.Trigger ?? DBNull.Value;
+            p[16].Value = (object?)r.BlockIcon ?? DBNull.Value;
+            p[17].Value = (object?)r.ImageUrl ?? DBNull.Value;
             insert.ExecuteNonQuery();
         }
 

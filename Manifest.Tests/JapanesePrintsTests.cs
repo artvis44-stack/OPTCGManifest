@@ -24,7 +24,13 @@ public class JapanesePrintsTests
           <div class="infoCol"><span>OP99-001</span><span>R</span><span>CHARACTER</span></div></dt>
          <dd><div class="frontCol"><img src="../images/cardlist/card/OP99-001.png"></div>
           <div class="backCol"><div class="color"><h3>色</h3>赤/緑</div>
-           <div class="col2"><div class="cost"><h3>コスト</h3>3</div></div></div></dd></dl>
+           <div class="col2"><div class="cost"><h3>コスト</h3>3</div>
+            <div class="attribute">
+             <h3>属性</h3>
+             <img src="/images/cardlist/attribute/ico_type07.png" alt="斬/特">
+            </div></div>
+           <div class="block"><h3>ブロック<br class="spInline">アイコン</h3>4</div>
+           <div class="trigger"><h3>トリガー</h3>【トリガー】このカードを登場させる。</div></div></dd></dl>
         </body></html>
         """;
 
@@ -32,7 +38,8 @@ public class JapanesePrintsTests
     {
         new() { CardId = "OP11-004", BaseId = "OP11-004", Name = "Nico Robin", Category = "CHARACTER",
                 Colors = "Purple, Black", Cost = 5, Power = 6000, Types = "Straw Hat Crew",
-                Effect = "[On Play] Draw 1 card.", SetLabel = "OP-11" },
+                Effect = "[On Play] Draw 1 card.", SetLabel = "OP-11", Attributes = "Wisdom",
+                Trigger = "", BlockIcon = 3 },
         new() { CardId = "OP11-004_p1", BaseId = "OP11-004", Name = "Nico Robin", Variant = "Alt art",
                 Category = "CHARACTER", Colors = "Purple, Black", SetLabel = "OP-11" },
     };
@@ -44,6 +51,7 @@ public class JapanesePrintsTests
                 CardId = c.CardId, BaseId = c.BaseId, Name = c.Name, SetLabel = "OP-11",
                 SetName = "ブースターパック", Rarity = c.Rarity, Category = c.Category, Colors = c.Colors,
                 Cost = c.Cost, Power = c.Power, Counter = c.Counter, Types = c.Types, Effect = c.Effect,
+                Attributes = c.Attributes, Trigger = c.Trigger, BlockIcon = c.BlockIcon,
                 ImageUrl = c.ImageUrl,
             }).ToList();
 
@@ -58,12 +66,15 @@ public class JapanesePrintsTests
         Assert.Equal(5, jp.Cost);
         Assert.Equal("[On Play] Draw 1 card.", jp.Effect);
         Assert.Equal("SP CARD", jp.Rarity);
+        Assert.Equal("Wisdom", jp.Attributes);
+        Assert.Equal("", jp.Trigger);
+        Assert.Equal(3, jp.BlockIcon);
         Assert.Equal("https://www.onepiece-cardgame.com/images/cardlist/card/OP11-004_p1.png",
                      jp.ImageUrl);
     }
 
     [Fact]
-    public void ACardNotOutInEnglishKeepsItsJapaneseTextWithColoursTranslated()
+    public void ACardNotOutInEnglishKeepsItsJapaneseTextWithColoursAndAttributesTranslated()
     {
         var jp = JapanesePrints.FromScrape(English, Scraped()).Single(r => r.BaseId == "OP99-001");
         Assert.Equal("OP99-001_jp", jp.CardId);
@@ -71,6 +82,9 @@ public class JapanesePrintsTests
         Assert.Equal("新しいカード", jp.Name);
         Assert.Equal("Red, Green", jp.Colors);
         Assert.Equal(3, jp.Cost);
+        Assert.Equal("Slash, Special", jp.Attributes);   // read off the icon, translated
+        Assert.Equal("【トリガー】このカードを登場させる。", jp.Trigger);
+        Assert.Equal(4, jp.BlockIcon);
     }
 
     [Fact]

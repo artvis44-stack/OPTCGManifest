@@ -27,8 +27,14 @@ public class ScraperTests
            <div class="col2"><div class="cost"><h3>Cost</h3>5</div>
             <div class="power"><h3>Power</h3>6,000</div>
             <div class="counter"><h3>Counter</h3>1000</div></div>
+           <div class="attribute">
+            <h3>Attribute</h3>
+            <img src="/images/cardlist/attribute/ico_type07.png?v" alt="Slash/Special"><i>Slash/Special</i>
+           </div>
+           <div class="block"><h3>Block<br class="spInline"> icon</h3>3</div>
            <div class="feature"><h3>Type</h3>Straw Hat Crew/Egghead</div>
            <div class="text"><h3>Effect</h3>[On Play] Draw 1 card.<br>Then, trash 1 card.</div>
+           <div class="trigger"><h3>Trigger</h3>[Trigger] Play this card.</div>
           </div></dd></dl>
         <dl class="modalCol" id="OP11-004_p1">
          <dt><div class="cardName">Nico Robin</div>
@@ -36,6 +42,7 @@ public class ScraperTests
          <dd><div class="frontCol"><img src="../images/cardlist/card/OP11-004_p1.png"></div>
           <div class="backCol"><div class="color"><h3>Color</h3>Purple</div>
            <div class="col2"><div class="counter"><h3>Counter</h3>-</div></div>
+           <div class="attribute"><h3>Attribute</h3> -<i></i></div>
            <div class="feature"><h3>Type</h3>Straw Hat Crew</div>
            <div class="text"><h3>Effect</h3>-</div></div></dd></dl>
         </body></html>
@@ -90,6 +97,39 @@ public class ScraperTests
     }
 
     [Fact]
+    public void ReadsTheTriggerBoxApartFromTheEffect()
+    {
+        var c = CatalogScraper.ParseCards(CardPage)[0];
+        Assert.Equal("[Trigger] Play this card.", c.Trigger);
+        Assert.DoesNotContain("Trigger", c.Effect);
+        Assert.Equal("", CatalogScraper.ParseCards(CardPage)[1].Trigger);
+    }
+
+    [Fact]
+    public void SplitsATwoAttributeIcon()
+    {
+        Assert.Equal("Slash, Special", CatalogScraper.ParseCards(CardPage)[0].Attributes);
+        Assert.Equal("", CatalogScraper.ParseCards(CardPage)[1].Attributes);   // a dash
+    }
+
+    [Fact]
+    public void AFileWithNoTriggerAnywhereIsFetchedAgain()
+    {
+        var cards = CatalogScraper.ParseCards(CardPage);
+        Assert.False(CatalogScraper.PredatesTriggers(cards));
+        foreach (var c in cards) c.Trigger = "";
+        Assert.True(CatalogScraper.PredatesTriggers(cards));
+        Assert.False(CatalogScraper.PredatesTriggers(new List<CatalogScraper.ScrapedCard>()));
+    }
+
+    [Fact]
+    public void ReadsTheBlockIcon()
+    {
+        Assert.Equal(3, CatalogScraper.ParseCards(CardPage)[0].BlockIcon);
+        Assert.Null(CatalogScraper.ParseCards(CardPage)[1].BlockIcon);
+    }
+
+    [Fact]
     public void BuildsAnAbsoluteImageUrl() =>
         Assert.Equal("https://en.onepiece-cardgame.com/images/cardlist/card/OP11-004.png?250425",
                      CatalogScraper.ParseCards(CardPage)[0].ImageUrl);
@@ -116,6 +156,21 @@ public class ScraperTests
         var (prefix, title, label) = CatalogScraper.SplitTitle(packs.Single().RawTitle);
         Assert.Equal("OP14-EB04", label);
         Assert.Equal("THE AZURE SEA’S SEVEN", title);
+        Assert.Equal("BOOSTER PACK", prefix);
+    }
+
+    [Fact]
+    public void ReadsTheLineBreakTheSiteEscapesInsideTheOption()
+    {
+        // As the live site serves it: the <br> arrives escaped, as text.
+        var packs = CatalogScraper.ParseSeries("""
+            <select id="series">
+            <option value="569101" >BOOSTER PACK &lt;br class=&quot;spInline&quot;&gt;-ROMANCE DAWN- [OP-01]</option>
+            </select>
+            """);
+        var (prefix, title, label) = CatalogScraper.SplitTitle(packs.Single().RawTitle);
+        Assert.Equal("OP-01", label);
+        Assert.Equal("ROMANCE DAWN", title);
         Assert.Equal("BOOSTER PACK", prefix);
     }
 

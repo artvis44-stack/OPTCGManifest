@@ -16,7 +16,7 @@ namespace Manifest.Services;
 /// grouping all read those fields, so a printing whose number the English catalogue
 /// knows takes the gameplay text from the English card and keeps only its own art,
 /// set and rarity. A card not out in English yet keeps its Japanese text, with the
-/// colours translated so it still lands in the right decks.
+/// colours and attributes translated so it still lands in the right decks.
 /// </summary>
 public static class JapanesePrints
 {
@@ -26,6 +26,12 @@ public static class JapanesePrints
     {
         ["赤"] = "Red", ["緑"] = "Green", ["青"] = "Blue",
         ["紫"] = "Purple", ["黒"] = "Black", ["黄"] = "Yellow",
+    };
+
+    static readonly Dictionary<string, string> Attributes = new()
+    {
+        ["打"] = "Strike", ["斬"] = "Slash", ["特"] = "Special",
+        ["知"] = "Wisdom", ["射"] = "Ranged",
     };
 
     static readonly Dictionary<string, string> Rarities = new()
@@ -43,10 +49,10 @@ public static class JapanesePrints
         return label.Length == 0 ? "Japanese" : label + " · Japanese";
     }
 
-    static string TranslateColours(string? colours) =>
-        string.Join(", ", (colours ?? "").Split(new[] { ',', '/' },
-                                                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                                         .Select(c => Colours.GetValueOrDefault(c, c)));
+    static string Translate(string? list, Dictionary<string, string> words) =>
+        string.Join(", ", (list ?? "").Split(new[] { ',', '/' },
+                                             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                                      .Select(w => words.GetValueOrDefault(w, w)));
 
     /// <summary>
     /// The catalogue rows for a scrape of the Japanese site (catalog-jp.json, ids as
@@ -89,18 +95,24 @@ public static class JapanesePrints
                 row.Power = en.Power;
                 row.Counter = en.Counter;
                 row.Types = en.Types;
+                row.Attributes = en.Attributes;
                 row.Effect = en.Effect;
+                row.Trigger = en.Trigger;
+                row.BlockIcon = en.BlockIcon;
             }
             else
             {
                 row.Name = jp.Name;
                 row.Category = jp.Category;
-                row.Colors = TranslateColours(jp.Colors);
+                row.Colors = Translate(jp.Colors, Colours);
                 row.Cost = jp.Cost;
                 row.Power = jp.Power;
                 row.Counter = jp.Counter;
                 row.Types = jp.Types;
+                row.Attributes = Translate(jp.Attributes, Attributes);
                 row.Effect = jp.Effect;
+                row.Trigger = jp.Trigger;
+                row.BlockIcon = jp.BlockIcon;
             }
             rows.Add(row);
         }

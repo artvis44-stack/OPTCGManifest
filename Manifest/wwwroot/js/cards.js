@@ -329,7 +329,7 @@ function cardViewHTML(c, o) {
   if (c.counter) st.push(['counter', '+' + c.counter, '']);
   const price = fmtGBP(c.price_gbp);
   if (price) st.push(['market', price, 'money']);
-  const typeline = [c.category, c.types].filter(Boolean).join('  ·  ');
+  const typeline = typeLine(c);
   const meta = [c.set_label, rarityLabel(c.rarity), c.variant].filter(Boolean);
   const holo = HOLO_RARITY.test(c.rarity || '') ? ' holo' : '';
   return `<div class="cv${o.two ? ' two' : ''}">
@@ -347,8 +347,9 @@ function cardViewHTML(c, o) {
       ${pips ? `<div class="cv-pips">${pips}</div>` : ''}
       ${st.length ? `<div class="cv-stats">${st.map(([k, v, cls]) =>
         `<div class="plaque ${cls}"><b>${esc(v)}</b><span>${k}</span></div>`).join('')}</div>` : ''}
-      ${typeline ? `<div class="cv-type">${esc(typeline)}</div>` : ''}
+      <div class="cv-type" data-typeline${typeline ? '' : ' hidden'}>${esc(typeline)}</div>
       <div class="effect" data-effect${c.effect ? '' : ' hidden'}>${esc(c.effect || '')}</div>
+      <div class="effect trigger" data-trigger${c.trigger ? '' : ' hidden'}>${esc(c.trigger || '')}</div>
       ${meta.length ? `<div class="cv-meta">${meta.map(t => `<span>${esc(t)}</span>`).join('')}</div>` : ''}
       ${o.ownRow || ''}
       ${o.actions || ''}
@@ -495,18 +496,26 @@ function wirePrintActs(host, c) {
   }).catch(() => {});
 }
 
-// The list endpoints leave out effect text to keep search fast; fetch it once the
-// card is actually open and slot it into the placeholder the viewer already drew.
+const typeLine = c => [c.category, c.attributes, c.types].filter(Boolean).join('  ·  ');
+
+// The list endpoints leave out effect text, Trigger text and attributes to keep
+// search fast; fetch them once the card is actually open and slot them into the
+// placeholders the viewer already drew.
 function fillEffect(c, host) {
-  if (c.effect) return;
+  if ('trigger' in c) return;
   api('/api/card/' + encodeURIComponent(c.card_id)).then(d => {
     const card = d && d.card;
-    if (!card || !card.effect || !document.body.contains(host)) return;
+    if (!card || !document.body.contains(host)) return;
     c.effect = card.effect;
-    host.querySelectorAll('[data-effect]').forEach(el => {
-      el.textContent = card.effect;
-      el.hidden = false;
+    c.trigger = card.trigger;
+    c.attributes = card.attributes;
+    const fill = (sel, text) => host.querySelectorAll(sel).forEach(el => {
+      el.textContent = text || '';
+      el.hidden = !text;
     });
+    fill('[data-effect]', c.effect);
+    fill('[data-trigger]', c.trigger);
+    fill('[data-typeline]', typeLine(c));
   }).catch(() => {});
 }
 

@@ -55,7 +55,10 @@ public static partial class CatalogScraper
         public int? Power { get; set; }
         public int? Counter { get; set; }
         public string Types { get; set; } = "";
+        public string Attributes { get; set; } = "";
         public string Effect { get; set; } = "";
+        public string Trigger { get; set; } = "";
+        public int? BlockIcon { get; set; }
         public string ImageUrl { get; set; } = "";
     }
 
@@ -81,6 +84,8 @@ public static partial class CatalogScraper
     [GeneratedRegex(@"(?is)<div\s+class=""[^""]*\bfrontCol\b[^""]*""[^>]*>\s*<img[^>]*\bsrc=""([^""]+)""")]
     private static partial Regex FrontColImg();
     [GeneratedRegex(@"(?is)<img[^>]*\bdata-src=""([^""]+)""")] private static partial Regex DataSrcImg();
+    [GeneratedRegex(@"(?is)<div\s+class=""[^""]*\battribute\b[^""]*""[^>]*>(?:(?!</div>).)*?<img[^>]*\balt=""([^""]*)""")]
+    private static partial Regex AttributeIcon();
     [GeneratedRegex(@"[^\d]")] private static partial Regex NonDigit();
     [GeneratedRegex(@"^p(\d+)$")] private static partial Regex AltArtSuffix();
     [GeneratedRegex(@"^r(\d+)$")] private static partial Regex ReprintSuffix();
@@ -113,9 +118,11 @@ public static partial class CatalogScraper
     /// <summary>
     /// A set title as text. Some carry a &lt;br class="spInline"&gt; for the site's phone
     /// layout, which older scrapes kept, so a set name read "BOOSTER PACK &lt;br …&gt;-ROMANCE DAWN".
+    /// The site escapes it inside the &lt;option&gt; (&amp;lt;br …&amp;gt;), so it only becomes
+    /// a tag to strip once decoded.
     /// </summary>
     public static string CleanTitle(string raw) =>
-        Spaces().Replace(WebUtility.HtmlDecode(AnyTag().Replace(raw, " ")), " ").Trim();
+        Spaces().Replace(AnyTag().Replace(WebUtility.HtmlDecode(raw), " "), " ").Trim();
 
     /// <summary>
     /// Puts right a printing an older scrape filed under a set name with markup in it -
@@ -199,6 +206,11 @@ public static partial class CatalogScraper
                               .Select(c => c.Trim()).Where(c => c.Length > 0);
             var types = Field("feature").Split('/')
                               .Select(t => t.Trim()).Where(t => t.Length > 0);
+            // Read off the icon: the Japanese site prints no text beside it. A card
+            // with two attributes has one icon for both, "Slash/Special".
+            var icon = AttributeIcon().Match(blk);
+            var attributes = (icon.Success ? WebUtility.HtmlDecode(icon.Groups[1].Value) : "")
+                              .Split('/').Select(a => a.Trim()).Where(a => a.Length > 0);
 
             var parts = cid.Split('_');
             var suffix = parts.Length > 1 ? parts[1] : "";
@@ -217,7 +229,11 @@ public static partial class CatalogScraper
                 Power = Number("power"),
                 Counter = Number("counter"),
                 Types = string.Join(", ", types),
+                Attributes = string.Join(", ", attributes),
                 Effect = Field("text"),
+                // A box of its own on the site, separate from the effect text.
+                Trigger = Field("trigger"),
+                BlockIcon = Number("block"),
                 ImageUrl = img,
             });
         }
@@ -282,6 +298,10 @@ public static partial class CatalogScraper
     /// </summary>
     public static List<Pack> NotYetHeld(IEnumerable<Pack> packs, IReadOnlySet<string> heldLabels) =>
         packs.Where(p => p.Label is null || !heldLabels.Contains(p.Label)).ToList();
+
+    /// <summary>Printings scraped before the Trigger box was read: there is not one Trigger among them.</summary>
+    public static bool PredatesTriggers(IReadOnlyCollection<ScrapedCard> rows) =>
+        rows.Count > 0 && rows.All(r => string.IsNullOrEmpty(r.Trigger));
 
     public static async Task<int> Run(string[] args, AppPaths paths)
     {
@@ -395,7 +415,11 @@ public static partial class CatalogScraper
             Console.WriteLine($"starting from {rows.Count} existing printings");
         }
 
-        if (newOnly)
+        // A file from before the scraper read the Trigger box has none on any card,
+        // so every set is fetched again, once, rather than only the new ones.
+        if (newOnly && PredatesTriggers(rows.Values))
+            Console.WriteLine("no Trigger text in the existing printings; fetching every set again");
+        else if (newOnly)
         {
             var held = rows.Values.Select(r => r.SetLabel).ToHashSet();
             wanted = NotYetHeld(wanted, held);
