@@ -18,7 +18,10 @@ public sealed class CatalogRow
     public int? Power { get; set; }
     public int? Counter { get; set; }
     public string? Types { get; set; }
+    public string? Attributes { get; set; }
     public string? Effect { get; set; }
+    public string? Trigger { get; set; }
+    public int? BlockIcon { get; set; }
     public string? ImageUrl { get; set; }
 }
 
@@ -62,7 +65,10 @@ public sealed class CardDetailRow
     public int? Power { get; set; }
     public int? Counter { get; set; }
     public string? Types { get; set; }
+    public string? Attributes { get; set; }
     public string? Effect { get; set; }
+    public string? Trigger { get; set; }
+    public int? BlockIcon { get; set; }
     public string? ImageUrl { get; set; }
     public int Qty { get; set; }
     public double? PriceGbp { get; set; }

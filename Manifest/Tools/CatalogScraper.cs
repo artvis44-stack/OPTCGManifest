@@ -44,7 +44,10 @@ public static partial class CatalogScraper
         public int? Power { get; set; }
         public int? Counter { get; set; }
         public string Types { get; set; } = "";
+        public string Attributes { get; set; } = "";
         public string Effect { get; set; } = "";
+        public string Trigger { get; set; } = "";
+        public int? BlockIcon { get; set; }
         public string ImageUrl { get; set; } = "";
     }
 
@@ -166,6 +169,9 @@ public static partial class CatalogScraper
                               .Select(c => c.Trim()).Where(c => c.Length > 0);
             var types = Field("feature").Split('/')
                               .Select(t => t.Trim()).Where(t => t.Length > 0);
+            // A card with two attributes prints them as one icon, "Slash/Special".
+            var attributes = Field("attribute").Split('/')
+                              .Select(a => a.Trim()).Where(a => a.Length > 0);
 
             var parts = cid.Split('_');
             var suffix = parts.Length > 1 ? parts[1] : "";
@@ -184,7 +190,11 @@ public static partial class CatalogScraper
                 Power = Number("power"),
                 Counter = Number("counter"),
                 Types = string.Join(", ", types),
+                Attributes = string.Join(", ", attributes),
                 Effect = Field("text"),
+                // A box of its own on the site, separate from the effect text.
+                Trigger = Field("trigger"),
+                BlockIcon = Number("block"),
                 ImageUrl = img,
             });
         }

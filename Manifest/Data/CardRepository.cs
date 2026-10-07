@@ -52,7 +52,10 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         Power = r.Int("power"),
         Counter = r.Int("counter"),
         Types = r.Str("types"),
+        Attributes = r.Str("attributes"),
         Effect = r.Str("effect"),
+        Trigger = r.Str("trigger_text"),
+        BlockIcon = r.Int("block_icon"),
         ImageUrl = r.Str("image_url"),
     };
 
@@ -399,7 +402,10 @@ public sealed class CardRepository : ICardRepository, IScanRepository
                 Power = r.Int("power"),
                 Counter = r.Int("counter"),
                 Types = r.Str("types"),
+                Attributes = r.Str("attributes"),
                 Effect = r.Str("effect"),
+                Trigger = r.Str("trigger_text"),
+                BlockIcon = r.Int("block_icon"),
                 ImageUrl = r.Str("image_url"),
                 Qty = r.IntOr("qty"),
                 PriceGbp = r.Real("price_gbp"),

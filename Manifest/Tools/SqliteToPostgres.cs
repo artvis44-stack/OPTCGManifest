@@ -37,7 +37,8 @@ public static class SqliteToPostgres
     static readonly (string Table, string Columns, string? Where)[] Tables =
     {
         ("catalog", "card_id, base_id, variant, name, set_label, set_name, rarity, category, "
-                    + "colors, cost, power, counter, types, effect, image_url", null),
+                    + "colors, cost, power, counter, types, attributes, effect, trigger_text, "
+                    + "block_icon, image_url", null),
         ("prices", "card_id, usd, gbp, fetched_at", null),
         ("users", "id, username, password_hash, email, created_at, last_seen", null),
         ("binders", "id, name, kind, owner_id, visible, created_at", null),

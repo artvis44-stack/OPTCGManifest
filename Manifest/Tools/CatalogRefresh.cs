@@ -37,7 +37,9 @@ public static class CatalogRefresh
         public int? Power { get; set; }
         public int? Counter { get; set; }
         public List<string>? Types { get; set; }
+        public List<string>? Attributes { get; set; }
         public string? Effect { get; set; }
+        public string? Trigger { get; set; }
         [JsonPropertyName("img_full_url")] public string? ImgFullUrl { get; set; }
     }
 
@@ -88,7 +90,9 @@ public static class CatalogRefresh
                     Power = c.Power,
                     Counter = c.Counter,
                     Types = string.Join(", ", c.Types ?? new()),
+                    Attributes = string.Join(", ", c.Attributes ?? new()),
                     Effect = c.Effect ?? "",
+                    Trigger = c.Trigger ?? "",
                     ImageUrl = c.ImgFullUrl ?? "",
                 };
             }
