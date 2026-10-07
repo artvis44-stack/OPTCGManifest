@@ -44,6 +44,9 @@ public sealed class SearchRow
     public string? ImageUrl { get; set; }
     public int Qty { get; set; }
     public double? PriceGbp { get; set; }
+
+    /// <summary>How many printings share this card number; set only when prints are grouped.</summary>
+    public int? PrintCount { get; set; }
 }
 
 /// <summary>
@@ -172,4 +175,12 @@ public sealed record CardFilter
 
     /// <summary>Leave out one card type - the deck editor never offers Leaders.</summary>
     public string? ExcludeCategory { get; init; }
+
+    /// <summary>
+    /// One row per card number instead of one per printing: alt arts and reprints
+    /// fold into a single entry, its qty owned summed across all of them. The row
+    /// shown is the first printing that passes the filters, so a rarity or set
+    /// filter still finds an alt art that differs from its base card there.
+    /// </summary>
+    public bool GroupPrints { get; init; }
 }

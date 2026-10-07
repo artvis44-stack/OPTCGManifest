@@ -60,6 +60,10 @@ button:disabled{opacity:.45;cursor:default}
 .tag.approved{background:rgba(103,192,178,.16);color:#8FD8CB}
 .tag.denied{background:rgba(200,64,58,.16);color:var(--red-hi)}
 .tag.used{background:rgba(239,231,214,.12);color:var(--dim)}
+.tag.running{background:rgba(227,166,58,.18);color:var(--gold-hi)}
+.tag.done{background:rgba(103,192,178,.16);color:#8FD8CB}
+.tag.failed{background:rgba(200,64,58,.16);color:var(--red-hi)}
+.lede{font-size:13.5px;line-height:1.55;color:var(--dim);margin:0 0 6px}
 .item{border-top:1px solid var(--edge);padding:15px 0}
 .item:first-of-type{border-top:0;padding-top:0}
 .item .top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -81,7 +85,7 @@ a{color:var(--gold)}
       <path d="M9.4 20.4 C16 17.6 32 17.6 38.6 20.4 L38.2 24.2 C32 21.2 16 21.2 9.8 24.2 Z"
             fill="#C8403A"/>
     </svg>
-    <div><h1>Manifest</h1><div class=sub>Access requests</div></div>
+    <div><h1>Manifest</h1><div class=sub>Admin</div></div>
   </div>
 """;
 
@@ -201,9 +205,16 @@ load();
     /// rather than leaving someone to guess why nothing arrived.
     /// </summary>
     public const string Admin = Style + """
-<title>Manifest — access requests</title>
+<title>Manifest — admin</title>
 <div class=wrap>
 """ + Brand + """
+  <div class=panel>
+    <h2>Card data</h2>
+    <p class=lede id=dataSummary>Loading…</p>
+    <div id=dataJobs></div>
+    <div class=msg id=dataMsg role=status></div>
+  </div>
+
   <div class=msg id=mail role=status></div>
 
   <div class=panel>
@@ -338,6 +349,120 @@ document.addEventListener('click', async e => {
 });
 
 load();
+
+// ---- card data: new sets and prices, the same jobs the schedule runs
+
+const JOBS = {
+  'scrape-catalog': { title: 'New sets', button: 'Check for new sets',
+    what: 'Looks at the official card list and adds any set the catalogue does not have yet.' },
+  'refresh-prices': { title: 'Prices', button: 'Refresh prices',
+    what: 'Market prices from optcgapi.com, in GBP.' },
+};
+let dataTimer = null;
+
+function when(stamp) {
+  if (!stamp) return 'never';
+  const t = new Date(String(stamp).replace(' ', 'T') + (/[zZ+]/.test(stamp) ? '' : 'Z'));
+  if (isNaN(t)) return escape(stamp);
+  const mins = Math.round((Date.now() - t) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + ' min ago';
+  if (mins < 48 * 60) return Math.round(mins / 60) + ' h ago';
+  return Math.round(mins / 1440) + ' days ago';
+}
+
+function every(hours) {
+  if (!hours) return 'Not scheduled - only when you press the button';
+  if (hours === 24) return 'Runs daily on its own';
+  if (hours % 24 === 0) return 'Runs every ' + (hours / 24) + ' days on its own';
+  return 'Runs every ' + hours + ' h on its own';
+}
+
+// "InvalidOperationException: could not ..." - the reason is the part worth showing.
+const reason = e => escape(String(e || '').replace(/^\w+Exception: /, ''));
+
+function outcome(key, last) {
+  if (!last) return 'Not run yet.';
+  if (last.status === 'queued' || last.status === 'running')
+    return last.error ? 'Will try again - last time: ' + reason(last.error) : 'Working on it…';
+  if (last.status === 'failed') return 'Failed: ' + (reason(last.error) || 'see the worker log');
+  const r = last.result || {};
+  if (key === 'scrape-catalog') {
+    if (!r.added) return 'Done ' + when(last.updated_at) + ' - nothing new.';
+    const sets = (r.sets || []).filter(s => !/promotion|other product/i.test(s));
+    return 'Done ' + when(last.updated_at) + ' - ' + r.added + ' new printings'
+         + (sets.length ? ' (' + sets.map(escape).join(', ') + ')' : '') + '.';
+  }
+  return 'Done ' + when(last.updated_at) + '.';
+}
+
+function jobTag(last) {
+  if (!last) return '';
+  const s = last.status === 'queued' ? 'running' : last.status;
+  const label = { running: 'running', done: 'done', failed: 'failed' }[s] || s;
+  return '<span class="tag ' + escape(s) + '">' + escape(label) + '</span>';
+}
+
+async function loadData() {
+  clearTimeout(dataTimer);
+  const r = await fetch('/api/admin/data', { headers: { 'Accept': 'application/json' } });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { $('dataSummary').textContent = data.error || 'Could not load.'; return; }
+
+  $('dataSummary').textContent = data.printings + ' printings in the catalogue, '
+    + data.priced + ' with a price (updated ' + when(data.prices_updated_at) + ').';
+
+  let busyNow = false;
+  $('dataJobs').innerHTML = Object.keys(JOBS).map(key => {
+    const job = (data.jobs || {})[key] || {};
+    const last = job.last;
+    const live = last && (last.status === 'queued' || last.status === 'running');
+    if (live) busyNow = true;
+    return '<div class=item>'
+      + '<div class=top><span class=addr>' + JOBS[key].title + '</span>' + jobTag(last) + '</div>'
+      + '<div class="meta under">' + JOBS[key].what + ' ' + every(job.every_hours) + '.</div>'
+      + '<div class="meta under">' + outcome(key, last) + '</div>'
+      + '<div class=row><button class="yes small" data-job=' + key + (live ? ' disabled' : '') + '>'
+      + (live ? 'Running…' : JOBS[key].button) + '</button></div>'
+      + '</div>';
+  }).join('');
+
+  if (data.worker === 'disabled') {
+    $('dataMsg').textContent = 'MANIFEST_WORKER_MODE is disabled, so nothing will run these. '
+                             + 'Set it to inline, or run a worker.';
+    $('dataMsg').className = 'msg warn';
+  }
+  // Watch a job through to the end; the scrape takes a minute or two.
+  if (busyNow) dataTimer = setTimeout(() => loadData().catch(() => {}), 3000);
+}
+
+document.addEventListener('click', async e => {
+  const button = e.target.closest('button[data-job]');
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  try {
+    const r = await fetch('/api/admin/data/' + button.dataset.job, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      $('dataMsg').textContent = data.error || 'That did not work.';
+      $('dataMsg').className = 'msg bad';
+    } else {
+      $('dataMsg').textContent = data.already ? 'Already running - showing that one.'
+                                              : 'Started. This page updates when it finishes.';
+      $('dataMsg').className = 'msg good';
+    }
+  } catch (err) {
+    $('dataMsg').textContent = 'Could not reach the server.';
+    $('dataMsg').className = 'msg bad';
+  }
+  await loadData().catch(() => {});
+});
+
+loadData().catch(() => {});
 </script>
 """;
 
@@ -347,8 +472,9 @@ load();
 """ + Brand + """
   <div class=panel>
     <h2>Not your page</h2>
-    <div class=empty>Access requests are the owner account's business — that is the
-      first account made on this server. You are signed in as someone else.</div>
+    <div class=empty>This page — access requests and the card data — is the owner
+      account's business: the first account made on this server. You are signed in as
+      someone else.</div>
     <div class=row><a href="/"><button class=yes>Back to the app</button></a></div>
   </div>
 </div>

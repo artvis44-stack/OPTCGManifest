@@ -56,6 +56,19 @@ public sealed class DeckCardPost
     [JsonConverter(typeof(LenientIntConverter))] public int? Qty { get; set; }
 }
 
+public sealed class CollectionPrintPost
+{
+    public string? From { get; set; }
+    public string? To { get; set; }
+    [JsonConverter(typeof(LenientIntConverter))] public int? Qty { get; set; }
+}
+
+public sealed class DeckPrintPost
+{
+    public string? From { get; set; }
+    public string? To { get; set; }
+}
+
 public sealed class ScanPost
 {
     public List<string>? Variants { get; set; }

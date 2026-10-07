@@ -127,7 +127,17 @@ public sealed class AppConfig
     public int WorkerConcurrency { get; init; } =
         int.TryParse(Env("MANIFEST_WORKER_CONCURRENCY"), out var n) && n > 0 ? Math.Min(n, 32) : 4;
 
-    public TimeSpan? RefreshPricesEvery { get; init; } = Hours("MANIFEST_REFRESH_PRICES_HOURS");
+    /// <summary>
+    /// Prices and new sets keep themselves current: daily unless these say otherwise,
+    /// and "off" (or 0) for a server that should never reach out on its own.
+    /// </summary>
+    public TimeSpan? RefreshPricesEvery { get; init; } = Hours("MANIFEST_REFRESH_PRICES_HOURS", 24);
+    public TimeSpan? ScrapeCatalogEvery { get; init; } = Hours("MANIFEST_SCRAPE_CATALOG_HOURS", 24);
+
+    /// <summary>
+    /// The April 2025 GitHub dataset. Off unless set: it replaces catalog.json outright,
+    /// so on a schedule it would keep undoing the new sets the scrape brings in.
+    /// </summary>
     public TimeSpan? RefreshCatalogEvery { get; init; } = Hours("MANIFEST_REFRESH_CATALOG_HOURS");
 
     /// <summary>
@@ -279,9 +289,10 @@ public sealed class AppConfig
         else if (MetricsEndpoint is { } metrics && metrics.Port == Port)
             errors.Add("MANIFEST_METRICS_LISTEN must use a different port from the site.");
 
-        foreach (var name in new[] { "MANIFEST_REFRESH_PRICES_HOURS", "MANIFEST_REFRESH_CATALOG_HOURS" })
-            if (Env(name) is { } raw && !(double.TryParse(raw, out var h) && h > 0))
-                errors.Add($"{name} must be a positive number of hours.");
+        foreach (var name in new[] { "MANIFEST_REFRESH_PRICES_HOURS", "MANIFEST_SCRAPE_CATALOG_HOURS",
+                                     "MANIFEST_REFRESH_CATALOG_HOURS" })
+            if (Env(name) is { } raw && !IsOff(raw) && !(double.TryParse(raw, out var h) && h > 0))
+                errors.Add($"{name} must be a number of hours, or off.");
 
         if (!IsProduction) return errors;
 
@@ -321,8 +332,15 @@ public sealed class AppConfig
               + "migrate-sqlite to read from."
             : null;
 
-    static TimeSpan? Hours(string name) =>
-        double.TryParse(Env(name), out var h) && h > 0 ? TimeSpan.FromHours(h) : null;
+    static TimeSpan? Hours(string name, double? byDefault = null)
+    {
+        var raw = Env(name);
+        if (raw is null) return byDefault is { } d ? TimeSpan.FromHours(d) : null;
+        return !IsOff(raw) && double.TryParse(raw, out var h) && h > 0 ? TimeSpan.FromHours(h) : null;
+    }
+
+    static bool IsOff(string raw) =>
+        raw.Trim().ToLowerInvariant() is "off" or "0" or "false" or "no";
 
     static long ReadUploadLimitBytes()
     {

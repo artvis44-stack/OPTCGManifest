@@ -20,11 +20,14 @@ public static class Cli
         Subcommands:
           user               add, list, delete accounts and change passwords
           scrape             rebuild catalog.json from the official card site
+                             (--new: only add sets it does not have yet;
+                             --lang jp: Japanese prints, into catalog-jp.json)
           refresh-catalog    rebuild catalog.json from the vegapull-records dataset
           refresh-prices     pull market prices into the database
           migrate-sqlite     copy a manifest.db into PostgreSQL, once
           worker             run background jobs (with MANIFEST_WORKER_MODE=external)
-          enqueue            queue refresh-prices, refresh-catalog or purge now
+          enqueue            queue scrape-catalog, refresh-prices, refresh-catalog
+                             or purge now
 
         Environment:
           MANIFEST_ENV          Development or Production (default Development)
@@ -47,8 +50,12 @@ public static class Cli
           MANIFEST_WORKER_CONCURRENCY
                                 jobs one process runs at once (default 4)
           MANIFEST_SCAN_MODE    sync or async (default: async in Production)
-          MANIFEST_REFRESH_PRICES_HOURS, MANIFEST_REFRESH_CATALOG_HOURS
-                                refresh on a schedule; unset means never
+          MANIFEST_SCRAPE_CATALOG_HOURS, MANIFEST_REFRESH_PRICES_HOURS
+                                how often new sets and prices are fetched
+                                (default 24; off to never)
+          MANIFEST_REFRESH_CATALOG_HOURS
+                                rebuild from the GitHub dataset on a schedule;
+                                unset means never
           MANIFEST_WEB_ROOT     serve the front end from this folder instead of
                                 the copy built into the binary, for editing it
           MANIFEST_UPLOAD_LIMIT_BYTES

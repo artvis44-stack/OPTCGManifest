@@ -6,7 +6,7 @@ namespace Manifest.Services;
 /// <summary>Turning what a human or a camera produces into a card number.</summary>
 public static partial class CardId
 {
-    [GeneratedRegex(@"((?:OP|ST|EB|PRB)\s?\d{2}\s?-\s?\d{3}|P\s?-\s?\d{3})[\s_-]*([PR]\d)?",
+    [GeneratedRegex(@"((?:OP|ST|EB|PRB)\s?\d{2}\s?-\s?\d{3}|P\s?-\s?\d{3})[\s_-]*([PR]\d)?(?:[\s_-]*(JP)\b)?",
                     RegexOptions.IgnoreCase)]
     private static partial Regex IdPattern();
 
@@ -31,6 +31,7 @@ public static partial class CardId
     /// <summary>
     /// Anything a human or a camera produces -> "OP01-016_p1". Null if unparseable.
     /// Handles lowercase, stray spaces, en-dashes, and an ID sitting inside a sentence.
+    /// A Japanese printing keeps its "_jp" tag: "OP01-016_p1_jp".
     /// </summary>
     public static string? Normalise(string? raw)
     {
@@ -40,7 +41,8 @@ public static partial class CardId
         if (!m.Success) return null;
         var core = Whitespace().Replace(m.Groups[1].Value, "");
         var suffix = m.Groups[2];
-        return suffix.Success ? core + "_" + suffix.Value.ToLowerInvariant() : core;
+        var id = suffix.Success ? core + "_" + suffix.Value.ToLowerInvariant() : core;
+        return m.Groups[3].Success ? id + JapanesePrints.Tag : id;
     }
 
     // OCR mixes up characters that look alike. The card number's shape is known

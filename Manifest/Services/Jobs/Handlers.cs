@@ -79,3 +79,34 @@ public sealed class RefreshCatalogHandler(AppPaths paths, Database db) : IJobHan
         return null;
     }
 }
+
+/// <summary>
+/// New sets from the official card site, merged into catalog.json and reseeded -
+/// `manifest scrape --new` followed by `manifest --reseed`. Only sets the catalogue
+/// does not have yet are fetched, so a run when nothing is new is a few requests.
+/// Anything new also queues a price refresh, so the new cards get prices too.
+/// </summary>
+public sealed class ScrapeCatalogHandler(AppPaths paths, Database db, JobQueue queue) : IJobHandler
+{
+    public string Type => JobTypes.ScrapeCatalog;
+
+    public async Task<object?> Run(Job job, CancellationToken cancel)
+    {
+        if (await CatalogScraper.ScrapeNew(paths) is not { } outcome)
+            throw new InvalidOperationException(
+                "could not read the official card site; see the worker log");
+        // The Japanese site is a bonus: if it cannot be read, the English sets
+        // still go in, and its last good scrape stays as it was.
+        var japanese = await CatalogScraper.ScrapeNew(paths, CatalogScraper.Japanese);
+        if (db.Initialise(forceReseed: true) is { } error)
+            throw new InvalidOperationException(error);
+        if (outcome.Added > 0)
+            queue.Enqueue(JobTypes.RefreshPrices, new { }, dedupeKey: "after-scrape:" + JobTypes.RefreshPrices);
+        return new
+        {
+            added = outcome.Added, printings = outcome.Printings, sets = outcome.Fetched,
+            japanese = japanese is null ? null
+                : new { added = japanese.Added, printings = japanese.Printings, sets = japanese.Fetched },
+        };
+    }
+}

@@ -25,6 +25,38 @@ public class CollectionTests(ServerFixture server)
     }
 
     [Fact]
+    public async Task ChangesCopiesToAnotherPrint()
+    {
+        await server.Reset();
+        await server.Log("OP01-016", 3);
+        await server.Log("OP01-016_p1", 1);
+        var (status, d) = await server.Post("/api/collection/print",
+                                            new { from = "OP01-016", to = "OP01-016_p1", qty = 2 });
+        Assert.Equal(200, status);
+        Assert.Equal(1, d.GetProperty("from_qty").GetInt32());
+        Assert.Equal(3, d.GetProperty("to_qty").GetInt32());
+
+        // Asking for more than there are moves what there is, and clears the old print.
+        (_, d) = await server.Post("/api/collection/print",
+                                   new { from = "OP01-016", to = "OP01-016_p1", qty = 9 });
+        Assert.Equal(0, d.GetProperty("from_qty").GetInt32());
+        Assert.Equal(4, d.GetProperty("to_qty").GetInt32());
+    }
+
+    [Fact]
+    public async Task WillNotChangeACardIntoADifferentCard()
+    {
+        await server.Reset();
+        await server.Log("OP01-016", 1);
+        var (status, _) = await server.Post("/api/collection/print",
+                                            new { from = "OP01-016", to = "OP01-004", qty = 1 });
+        Assert.Equal(400, status);
+        (status, _) = await server.Post("/api/collection/print",
+                                        new { from = "OP01-004", to = "OP01-004_p1", qty = 1 });
+        Assert.Equal(400, status);   // none of it owned
+    }
+
+    [Fact]
     public async Task NormalisesLowercaseOnWrite()
     {
         await server.Reset();

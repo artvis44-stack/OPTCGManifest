@@ -15,6 +15,8 @@ public interface ICardRepository
     Facets Facets();
     List<CollectionRow> Collection(BinderScope scope);
     CardDetailRow? CardDetail(BinderScope scope, string rawCardId);
+    List<SearchRow> Prints(BinderScope scope, string rawCardId);
+    (int From, int To) ChangePrint(long binderId, long actorId, string rawFrom, string rawTo, int qty);
     Stats Stats(BinderScope scope);
     AdjustResult Adjust(long binderId, long actorId, string rawCardId, int? delta, int? qty,
                         string? note);
@@ -71,6 +73,7 @@ public interface IDeckRepository
     void Delete(long userId, long deckId);
     DeckDetail? SetCard(long userId, long deckId, string cardId, int? qty);
     DeckDetail? SetCards(long userId, long deckId, IReadOnlyList<CardQuantity> cards);
+    DeckDetail? SwapPrint(long userId, long deckId, string fromCardId, string toCardId);
 }
 
 public interface IScanRepository

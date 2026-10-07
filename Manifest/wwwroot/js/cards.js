@@ -313,7 +313,7 @@ const collectionActs = c => `<div class="cv-act">
     <span class="n" data-qty>${c.qty || 0}</span>
     <button class="stepper" data-step="1" aria-label="One more">+</button>
     <span class="lbl">owned</span>
-  </div>${moveActs(c)}`;
+  </div>${moveActs(c)}<div data-print-acts></div>`;
 
 function cardViewHTML(c, o) {
   o = o || {};
@@ -357,6 +357,59 @@ function cardViewHTML(c, o) {
   </div>`;
 }
 
+/* ---------- print picker ----------
+   Alt arts and reprints carry the same card number as the base card - it is the
+   art that differs - so the deck builder and the scan result both show one card
+   and let you choose which printing you mean. Which printings a number has never
+   changes while the page is open, so each family is fetched once. */
+const printFamilies = new Map();
+function printsOf(cardId) {
+  const base = String(cardId || '').split('_')[0];
+  if (!printFamilies.has(base))
+    printFamilies.set(base, api('/api/prints/' + encodeURIComponent(base))
+      .then(d => d.prints || [])
+      .catch(e => { printFamilies.delete(base); throw e; }));
+  return printFamilies.get(base);
+}
+
+const printLabel = p => p.variant || 'Base';
+
+// badge(p) adds a corner marker per printing, e.g. how many of it are in the deck.
+function printStripHTML(prints, selectedId, badge) {
+  if (!prints || prints.length < 2) return '';
+  return `<div class="prints">
+    <div class="prints-h">Prints <span>${prints.length}</span></div>
+    <div class="prints-row">${prints.map(p => {
+      const sub = [p.set_label, rarityShort(p.rarity)].filter(Boolean).join(' · ');
+      const price = fmtGBP(p.price_gbp);
+      return `<button type="button" class="print${p.card_id === selectedId ? ' on' : ''}"
+          data-print="${esc(p.card_id)}" title="${esc(p.card_id + ' · ' + printLabel(p))}"
+          aria-pressed="${p.card_id === selectedId}">
+        <img loading="lazy" alt="" src="/img/${encodeURIComponent(p.card_id)}">
+        <span class="print-lbl">${esc(printLabel(p))}</span>
+        ${sub ? `<span class="print-sub">${esc(sub)}</span>` : ''}
+        ${price ? `<span class="print-price">${esc(price)}</span>` : ''}
+        ${badge ? badge(p) : ''}
+      </button>`;
+    }).join('')}</div>
+  </div>`;
+}
+
+function wirePrintStrip(host, onPick) {
+  const row = host.querySelector('.prints-row');
+  const on = host.querySelector('.print.on');
+  // Keep the chosen printing in view when the strip is wider than the screen.
+  if (row && on) row.scrollLeft = on.offsetLeft - row.offsetLeft - 8;
+  host.querySelectorAll('[data-print]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    host.querySelectorAll('.print').forEach(x => {
+      x.classList.toggle('on', x === b);
+      x.setAttribute('aria-pressed', String(x === b));
+    });
+    onPick(b.dataset.print);
+  });
+}
+
 // Pointer tilt + specular sweep. The CSS custom properties live on .cv and are
 // read by .cv-frame, so the whole viewer stays in one transform context.
 function wireCardView(host, c) {
@@ -393,6 +446,54 @@ function wireCollectionActs(host, c) {
     syncCardQty(c.card_id, r.qty);
   });
   wireMoveActs(host, c);
+  wirePrintActs(host, c);
+}
+
+// "This one is really the alt art": the owned card's other printings, each with
+// how many of it this binder holds, and a way to re-file copies onto one of them.
+function wirePrintActs(host, c) {
+  const slot = host.querySelector('[data-print-acts]');
+  if (!slot || !binderWritable() || !(c.qty > 0)) return;
+  const binder = BINDER === null ? '' : '?binder=' + encodeURIComponent(BINDER);
+  api('/api/prints/' + encodeURIComponent(c.card_id) + binder).then(d => {
+    const prints = d.prints || [];
+    if (!document.body.contains(slot) || prints.length < 2) return;
+    slot.innerHTML = printStripHTML(prints, c.card_id,
+        p => p.qty ? `<span class="print-own" title="owned">${p.qty}</span>` : '')
+      + `<div class="print-change" hidden></div>`;
+    const bar = slot.querySelector('.print-change');
+    wirePrintStrip(slot, id => {
+      if (id === c.card_id) { bar.hidden = true; return; }
+      const p = prints.find(x => x.card_id === id);
+      const n = c.qty || 0;
+      bar.hidden = false;
+      bar.innerHTML = `<span class="lbl">Change to ${esc(printLabel(p))}${
+          p.set_label ? ' · ' + esc(p.set_label) : ''}</span>
+        <button type="button" class="ghost" data-change="1">Change 1</button>
+        ${n > 1 ? `<button type="button" class="ghost" data-change="${n}">Change all ${n}</button>` : ''}`;
+      bar.scrollIntoView({block: 'nearest'});
+      bar.querySelectorAll('[data-change]').forEach(b => b.onclick = async () => {
+        bar.querySelectorAll('button').forEach(x => x.disabled = true);
+        try {
+          const r = await api('/api/collection/print', {method: 'POST',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify({from: c.card_id, to: id, qty: +b.dataset.change})});
+          syncCardQty(c.card_id, r.from_qty);
+          syncCardQty(id, r.to_qty);
+          refreshTotals();
+          if (!$('#paneOwn').hidden) loadOwned().catch(() => {});
+          // Show the print the copies went to, where the old one was showing.
+          const next = (await api('/api/card/' + encodeURIComponent(id))).card;
+          if (!next) return;
+          if (host.id === 'inspector') showInspector(next);
+          else openCardModal(next);
+        } catch (e) {
+          bar.querySelector('.lbl').textContent = e.message || 'Could not change it';
+          bar.querySelectorAll('button').forEach(x => x.disabled = false);
+        }
+      });
+    });
+  }).catch(() => {});
 }
 
 const typeLine = c => [c.category, c.attributes, c.types].filter(Boolean).join('  ·  ');

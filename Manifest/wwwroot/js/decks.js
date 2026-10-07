@@ -71,7 +71,8 @@ $('#fOwnedLeader').onchange = () => doLeaderSearch().catch(() => {});
 const leaderPager = makePager({
   host: $('#leaderResults'),
   url: cursor => {
-    const params = new URLSearchParams({q: $('#qLeader').value.trim(), category: 'Leader', cursor});
+    const params = new URLSearchParams({q: $('#qLeader').value.trim(), category: 'Leader',
+                                        group: 'prints', cursor});
     if ($('#fColorLeader').value) params.set('colors', $('#fColorLeader').value);
     if ($('#fOwnedLeader').value) params.set('owned', $('#fOwnedLeader').value);  // '1' owned, '0' not
     return '/api/search?binder=all&' + params.toString();
@@ -150,8 +151,23 @@ function renderDeckHead() {
       <div class="stat">${esc(leader.name)} · ${esc(leader.colors)} · Life ${leader.life ?? '—'}</div>
       <div class="stat ${d.legal.size_ok ? '' : 'bad'}"><b>${d.total}</b> / ${d.deck_size_target} cards</div>
       <div class="rowbtns"><button class="ghost" id="btnChangeLeader">Change leader</button></div>
+      <div id="leaderPrints"></div>
     </div>` : '';
   if (!leader) return;
+  // The Leader's own printing is picked here: it sits in the leader slot, not the list.
+  printsOf(leader.card_id).then(prints => {
+    const slot = $('#leaderPrints');
+    if (!slot || !currentDeck || currentDeck.leader !== leader) return;
+    slot.innerHTML = printStripHTML(prints, leader.card_id);
+    wirePrintStrip(slot, async cardId => {
+      if (cardId === leader.card_id) return;
+      const r = await api(`/api/decks/${d.id}`, {method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({leader_card_id: cardId})});
+      currentDeck = r.deck;
+      renderDeckHead();
+    });
+  }).catch(() => {});
   $('#deckLeaderImg').onclick = async () => {
     const r = await api('/api/card/' + encodeURIComponent(leader.card_id) + '?binder=all');
     if (r.card) openCardModal(r.card);
@@ -249,26 +265,45 @@ function deckQtyOf(cardId) {
   return e ? e.qty : 0;
 }
 
+// Every printing of a card number counts toward the one browse tile it shows as.
+function deckQtyOfBase(baseId) {
+  return currentDeck.cards.filter(x => x.base_id === baseId).reduce((n, x) => n + x.qty, 0);
+}
+
+// Which printing a tap on a browse tile adds: the one already in the deck (the
+// most-played, if several are), else the printing the tile shows.
+function deckPrintFor(baseId, shownId) {
+  const inDeck = currentDeck.cards.filter(x => x.base_id === baseId)
+    .sort((a, b) => b.qty - a.qty);
+  return inDeck.length ? inDeck[0].card_id : shownId;
+}
+
 function tileHTML(c, ownedQty, deckQty, illegal) {
   const ownedCls = ownedQty > 0 ? '' : 'zero';
+  const prints = c.print_count > 1
+    ? `<span class="pill printcount" title="${c.print_count} prints">${c.print_count} prints</span>` : '';
   return `<div class="ctile${illegal ? ' illegal' : ''}" data-id="${esc(c.card_id)}"
-       title="${esc(c.name || c.card_id)}">
+       data-base="${esc(c.base_id || c.card_id)}" title="${esc(c.name || c.card_id)}">
     <img loading="lazy" alt="" src="/img/${encodeURIComponent(c.card_id)}">
     <span class="pill owncount ${ownedCls}">${ownedQty}</span>
+    ${prints}
     ${deckQty ? `<span class="pill deckcount">${deckQty}</span>` : ''}
   </div>`;
 }
 
 function wireTiles(host, mode) {   // mode: 'add' (+1 per tap) or 'remove' (-1 per tap)
   host.querySelectorAll('.ctile').forEach(tile => {
-    const id = tile.dataset.id;
+    // A browse tile stands for every printing of its number; add to the one in play.
+    const pick = () => mode === 'add' ? deckPrintFor(tile.dataset.base, tile.dataset.id)
+                                      : tile.dataset.id;
     tile.onclick = async () => {
+      const id = pick();
       const cur = deckQtyOf(id);
       const next = mode === 'add' ? cur + 1 : Math.max(0, cur - 1);
       await setDeckCardQty(id, next);
       loadPreview(id).catch(() => {});
     };
-    tile.onmouseenter = () => hoverPreview(id);
+    tile.onmouseenter = () => hoverPreview(pick());
   });
 }
 
@@ -306,7 +341,9 @@ function renderPreview(c) {
         <span class="lbl">in deck</span>
       </div>`,
   });
+  host.querySelector('.cv-body').insertAdjacentHTML('beforeend', '<div data-prints></div>');
   wireCardView(host, c);
+  fillPreviewPrints(host, c);
   const bump = async d => {
     await setDeckCardQty(c.card_id, Math.max(0, deckQtyOf(c.card_id) + d));
     loadPreview(c.card_id).catch(() => {});
@@ -315,7 +352,39 @@ function renderPreview(c) {
   if (minus) minus.onclick = () => bump(-1);
   if (plus) plus.onclick = () => bump(1);
   document.querySelectorAll('.ctile').forEach(t =>
-    t.classList.toggle('selected', t.dataset.id === c.card_id));
+    t.classList.toggle('selected', t.dataset.id === c.card_id
+      || (t.dataset.base === c.base_id && t.closest('#deckBrowseGrid') !== null)));
+}
+
+// The previewed card's other printings: tap one to look at it (the +/- then
+// applies to that printing), or move every copy in the deck onto this one.
+function fillPreviewPrints(host, c) {
+  printsOf(c.card_id).then(prints => {
+    const slot = host.querySelector('[data-prints]');
+    if (!slot || previewedCard !== c) return;
+    const others = currentDeck.cards.filter(x => x.base_id === c.base_id && x.card_id !== c.card_id);
+    const moving = others.reduce((n, x) => n + x.qty, 0);
+    slot.innerHTML = printStripHTML(prints, c.card_id, p => {
+      const n = deckQtyOf(p.card_id);
+      return n ? `<span class="print-deck">${n}</span>` : '';
+    }) + (moving && !isLeaderCard(c)
+      ? `<button type="button" class="ghost printSwap" id="previewSwap">Use this print for all
+           ${moving + deckQtyOf(c.card_id)} in the deck</button>` : '');
+    wirePrintStrip(slot, id => loadPreview(id).catch(() => {}));
+    const swap = $('#previewSwap');
+    if (swap) swap.onclick = async () => {
+      swap.disabled = true;
+      for (const o of others) {
+        const r = await api(`/api/decks/${currentDeck.id}/print`, {method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify({from: o.card_id, to: c.card_id})});
+        currentDeck = r.deck;
+      }
+      renderDeckHead(); renderDeckLegal(); renderDeckGuide(); renderDeckCards(); renderBuyList();
+      deckBrowsePager.repaint();
+      loadPreview(c.card_id).catch(() => {});
+    };
+  }).catch(() => {});
 }
 
 function renderDeckCards() {
@@ -381,7 +450,8 @@ const deckBrowsePager = makePager({
   url: cursor => {
     const params = new URLSearchParams({
       q: $('#qDeck').value.trim(), sort: $('#sortDeckBrowse').value,
-      colors: currentDeck.leader.colors || '', exclude_category: 'Leader', cursor});
+      colors: currentDeck.leader.colors || '', exclude_category: 'Leader',
+      group: 'prints', cursor});
     if ($('#fCategoryDeck').value) params.set('category', $('#fCategoryDeck').value);
     if ($('#fSetDeck').value) params.set('set', $('#fSetDeck').value);
     if ($('#fRarityDeck').value) params.set('rarity', $('#fRarityDeck').value);
@@ -390,7 +460,7 @@ const deckBrowsePager = makePager({
   },
   paint: (items, append) => {
     const host = $('#deckBrowseGrid');
-    const html = items.map(c => tileHTML(c, c.qty, deckQtyOf(c.card_id), false)).join('');
+    const html = items.map(c => tileHTML(c, c.qty, deckQtyOfBase(c.base_id), false)).join('');
     if (append) host.insertAdjacentHTML('beforeend', html);
     else host.innerHTML = html;
     wireTiles(host, 'add');

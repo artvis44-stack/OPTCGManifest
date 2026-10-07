@@ -32,6 +32,9 @@ public class CardIdTests
     [InlineData("OP01-016_p1", "OP01-016_p1")]
     [InlineData("OP01-016 P1", "OP01-016_p1")]
     [InlineData("P-001", "P-001")]
+    [InlineData("OP01-016_jp", "OP01-016_jp")]
+    [InlineData("op01-016_p1_JP", "OP01-016_p1_jp")]
+    [InlineData("OP01-016 p1 jp", "OP01-016_p1_jp")]
     public void NormalisesWhatAHumanTypes(string raw, string want) =>
         Assert.Equal(want, CardId.Normalise(raw));
 

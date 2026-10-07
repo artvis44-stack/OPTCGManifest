@@ -164,10 +164,31 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         AddCatalogFilters(where, cmd, filter);
         if (order.After(cursor, cmd, _db.Dialect) is { } after) where.Add(after);
 
+        // Rows() binds the scope's parameters, so it is called once whichever join is used.
+        var scopeRows = scope.Rows(cmd);
+        var ownedJoin = $"{scopeRows} k ON k.card_id = c.card_id";
+        var printCount = "";
+        if (filter.GroupPrints)
+        {
+            // The printing that stands for its card number: the first one that passes
+            // the per-printing filters (rarity and set can differ between an alt art
+            // and its base card; everything else a filter looks at cannot).
+            var rep = new List<string> { "g.base_id = c.base_id" };
+            if (!string.IsNullOrEmpty(filter.Rarity)) rep.Add("g.rarity = @rarity");
+            if (!string.IsNullOrEmpty(filter.SetLabel)) rep.Add("g.set_label = @set_label");
+            where.Add($"c.card_id = (SELECT MIN(g.card_id) FROM catalog g WHERE {string.Join(" AND ", rep)})");
+            ownedJoin = $"""
+                (SELECT kc.base_id, SUM(kk.qty) AS qty
+                 FROM {scopeRows} kk JOIN catalog kc ON kc.card_id = kk.card_id
+                 GROUP BY kc.base_id) k ON k.base_id = c.base_id
+                """;
+            printCount = ", (SELECT COUNT(*) FROM catalog pc WHERE pc.base_id = c.base_id) AS print_count";
+        }
+
         cmd.CommandText = $"""
-            SELECT {ListColumns}, COALESCE(k.qty, 0) AS qty, p.gbp AS price_gbp,
+            SELECT {ListColumns}, COALESCE(k.qty, 0) AS qty, p.gbp AS price_gbp{printCount},
                    {order.SelectColumns}
-            FROM catalog c LEFT JOIN {scope.Rows(cmd)} k ON k.card_id = c.card_id
+            FROM catalog c LEFT JOIN {ownedJoin}
                            LEFT JOIN prices p ON p.card_id = c.card_id
             {(where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "")}
             ORDER BY {order.OrderBy}
@@ -193,7 +214,51 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             ImageUrl = r.Str("image_url"),
             Qty = r.IntOr("qty"),
             PriceGbp = r.Real("price_gbp"),
+            PrintCount = filter.GroupPrints ? r.IntOr("print_count") : null,
         });
+    }
+
+    /// <summary>
+    /// Every printing of one card number - base, alt arts, reprints, then the Japanese
+    /// printings - for the print picker, each with its own qty owned and price. Any
+    /// printing's id will do.
+    /// </summary>
+    public List<SearchRow> Prints(BinderScope scope, string rawCardId)
+    {
+        var cid = CardId.Normalise(rawCardId) ?? rawCardId.ToUpperInvariant().Trim();
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT {ListColumns}, COALESCE(k.qty, 0) AS qty, p.gbp AS price_gbp
+            FROM catalog c LEFT JOIN {scope.Rows(cmd)} k ON k.card_id = c.card_id
+                           LEFT JOIN prices p ON p.card_id = c.card_id
+            WHERE c.base_id = @base
+            ORDER BY CASE WHEN c.variant LIKE '%Japanese' THEN 1 ELSE 0 END, c.card_id
+            """;
+        cmd.Bind("@base", cid.Split('_')[0]);
+        var rows = new List<SearchRow>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            rows.Add(new SearchRow
+            {
+                CardId = r.Text("card_id"),
+                BaseId = r.Text("base_id"),
+                Variant = r.Text("variant"),
+                Name = r.Text("name"),
+                SetLabel = r.Str("set_label"),
+                SetName = r.Str("set_name"),
+                Rarity = r.Str("rarity"),
+                Category = r.Str("category"),
+                Colors = r.Str("colors"),
+                Cost = r.Int("cost"),
+                Power = r.Int("power"),
+                Counter = r.Int("counter"),
+                Types = r.Str("types"),
+                ImageUrl = r.Str("image_url"),
+                Qty = r.IntOr("qty"),
+                PriceGbp = r.Real("price_gbp"),
+            });
+        return rows;
     }
 
     /// <summary>
@@ -464,6 +529,91 @@ public sealed class CardRepository : ICardRepository, IScanRepository
     /// shared binder, may be two people. <paramref name="actorId"/> is recorded as
     /// who added a card the binder did not have yet.
     /// </summary>
+    /// <summary>
+    /// Re-files copies in one binder from one printing to another printing of the same
+    /// card number - "this one is actually the alt art" - in one step, so the count
+    /// never dips or doubles in between. The note travels with them.
+    /// </summary>
+    public (int From, int To) ChangePrint(long binderId, long actorId, string rawFrom, string rawTo,
+                                          int qty)
+    {
+        var from = CardId.Normalise(rawFrom) ?? rawFrom.ToUpperInvariant().Trim();
+        var to = CardId.Normalise(rawTo) ?? rawTo.ToUpperInvariant().Trim();
+        if (qty < 1) throw new ArgumentException("Change at least one copy.");
+        if (from == to) throw new ArgumentException("That is already the print it is.");
+
+        using var conn = _db.Open();
+        var target = CatalogRowById(conn, to) ?? throw new ArgumentException($"{to} is not in the catalogue.");
+        if (target.BaseId != from.Split('_')[0])
+            throw new ArgumentException($"{to} is a different card, not another print of {from}.");
+
+        using var tx = conn.BeginTransaction();
+        int have;
+        string note;
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "SELECT qty, note FROM collection WHERE binder_id = @b AND card_id = @id"
+                              + _db.Dialect.ForUpdate;
+            cmd.Bind("@b", binderId);
+            cmd.Bind("@id", from);
+            using var r = cmd.ExecuteReader();
+            if (!r.Read()) throw new ArgumentException($"There is no {from} in this binder.");
+            have = r.IntOr("qty");
+            note = r.Text("note");
+        }
+        var moving = Math.Min(qty, have);
+        if (moving < 1) throw new ArgumentException($"There is no {from} in this binder.");
+
+        var now = _db.Dialect.Now;
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = $"""
+                UPDATE collection SET qty = qty - @n, updated_at = {now}
+                WHERE binder_id = @b AND card_id = @from
+                """;
+            cmd.Bind("@n", moving);
+            cmd.Bind("@b", binderId);
+            cmd.Bind("@from", from);
+            cmd.ExecuteNonQuery();
+        }
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM collection WHERE binder_id = @b AND card_id = @from AND qty <= 0";
+            cmd.Bind("@b", binderId);
+            cmd.Bind("@from", from);
+            cmd.ExecuteNonQuery();
+        }
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = $"""
+                INSERT INTO collection (binder_id, card_id, qty, note, added_by)
+                VALUES (@b, @to, @n, @note, @actor)
+                ON CONFLICT (binder_id, card_id) DO UPDATE
+                  SET qty = collection.qty + excluded.qty,
+                      note = COALESCE(NULLIF(collection.note, ''), excluded.note),
+                      updated_at = {now}
+                """;
+            cmd.Bind("@b", binderId);
+            cmd.Bind("@to", target.CardId);
+            cmd.Bind("@n", moving);
+            cmd.Bind("@note", note);
+            cmd.Bind("@actor", actorId);
+            cmd.ExecuteNonQuery();
+        }
+
+        int Qty(string id)
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT qty FROM collection WHERE binder_id = @b AND card_id = @id";
+            cmd.Bind("@b", binderId);
+            cmd.Bind("@id", id);
+            return cmd.ExecuteScalar() is { } q and not DBNull ? Convert.ToInt32(q) : 0;
+        }
+        var result = (Qty(from), Qty(target.CardId));
+        tx.Commit();
+        return result;
+    }
+
     public AdjustResult Adjust(long binderId, long actorId, string rawCardId, int? delta, int? qty,
                                string? note)
     {

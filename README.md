@@ -180,47 +180,52 @@ The database is a single file, `manifest.db`. Copy it to back it up.
 
 ## What the catalogue covers
 
-2,627 printings: OP-01 through OP-10, EB-01, EB-02, PRB-01, ST-01 through ST-21,
-promos and other-product cards. Data comes from the
-[vegapull-records](https://github.com/coko7/vegapull-records) dataset and is current
-to April 2025.
+Every English set on the official card list at the time `catalog.json` was last
+scraped — OP-01 onward, the EB and PRB sets, the starter and ultra decks, promos and
+other-product cards. Japanese-only cards are not included.
 
-**Sets released after that are not in it** — OP-11 onward is missing. You can still
-log those cards and they count correctly; they just show up without a name or
-picture.
+A set released since then is still loggable — the cards count correctly, they just
+show up without a name or picture until the catalogue catches up, which it does on
+its own.
 
-To bring it up to date, scrape the official card list:
+## Keeping cards and prices current
+
+Nothing to run. The server does both by itself, once a day:
+
+- **New sets.** It reads the set list on `en.onepiece-cardgame.com`, fetches any set
+  the catalogue does not have yet, plus the promo lists, which grow between sets, and
+  adds them. When nothing is new that is a handful of requests. Cards logged before their
+  set arrived pick up their name and picture.
+- **Prices.** Market prices from [optcgapi.com](https://optcgapi.com), converted to
+  GBP at the day's rate. A new set's prices are fetched straight after it arrives.
+
+To do either now, sign in as the owner (the first account made on the server),
+press **Admin** at the top, and use **Check for new sets** or **Refresh prices**
+under *Card data*. The same panel shows when each last ran and what happened.
+
+To change how often they run, set a number of hours, or `off`:
 
 ```
-dotnet run --project Manifest -- scrape
-dotnet run --project Manifest -- --reseed
+MANIFEST_SCRAPE_CATALOG_HOURS=168   # new sets weekly
+MANIFEST_REFRESH_PRICES_HOURS=off   # never fetch prices
 ```
 
-That reads `en.onepiece-cardgame.com` directly, so it is current whenever you run
-it, with no third-party dataset in the way. It takes a couple of minutes — one
-request per set with a deliberate pause between, because it is someone else's
-website.
-
-Useful variations:
+From a console, the same work is available as subcommands:
 
 ```
-dotnet run --project Manifest -- scrape --list              # see what sets exist first
-dotnet run --project Manifest -- scrape --only OP-11 OP-12  # just the missing ones
-dotnet run --project Manifest -- scrape --merge --only OP-11 OP-12   # add to what you have
+dotnet run --project Manifest -- scrape --new     # add sets it does not have yet
+dotnet run --project Manifest -- --reseed         # load catalog.json into the database
+dotnet run --project Manifest -- refresh-prices
 ```
 
-`refresh-catalog` is the fallback, pulling the same April 2025 dataset from GitHub.
-Use it when the official site is unreachable or its markup changes.
+`scrape` on its own re-reads every set (a couple of minutes, with a pause between
+requests, because it is someone else's website); `scrape --list` shows the sets
+the site lists and `--only OP-11 OP-12` limits it to some.
 
-Japanese-only cards are not included. The upstream dataset has a Japanese file with
-known formatting problems, so it is deliberately left out.
-
-## What this does not do
-
-**Prices.** TCGplayer and Cardmarket both gate their pricing APIs behind approval,
-and scraping them breaks the moment they change a page. This tool counts what you
-own and hands you a CSV; if you want values, paste that CSV into a service that has
-proper price data.
+`refresh-catalog` replaces `catalog.json` with the
+[vegapull-records](https://github.com/coko7/vegapull-records) dataset, which stops at
+April 2025. It is only a fallback for when the official site's markup changes, and
+it drops every set newer than that until the next new-set check.
 
 ## Checking which version you are running
 
@@ -242,12 +247,13 @@ dotnet run --project Manifest -- --reseed     # rebuild the catalogue from catal
 dotnet run --project Manifest -- --verbose    # log every request
 ```
 
-The catalogue and price jobs are subcommands of the same binary:
+The catalogue and price jobs are subcommands of the same binary, though the server
+runs them itself (see *Keeping cards and prices current*):
 
 ```
+dotnet run --project Manifest -- scrape --new      # add new sets from the official site
 dotnet run --project Manifest -- refresh-prices    # market prices, in GBP
 dotnet run --project Manifest -- refresh-catalog   # rebuild from the GitHub dataset
-dotnet run --project Manifest -- scrape            # rebuild from the official site
 ```
 
 ### PostgreSQL instead of SQLite
@@ -316,8 +322,11 @@ and one slot in every worker is kept for the urgent kinds. With
 `MANIFEST_SCAN_MODE=async` (the Production default) the phone sends a scan and
 waits for the worker's answer instead of holding the request open.
 
-`MANIFEST_REFRESH_PRICES_HOURS=24` refreshes prices daily; `manifest enqueue
-refresh-prices` (or `refresh-catalog`, or `purge`) queues one now.
+New sets and prices are checked daily (see *Keeping cards and prices current*);
+`manifest enqueue scrape-catalog` (or `refresh-prices`, `refresh-catalog`, `purge`)
+queues one now, which is what the buttons on the admin page do. With several
+workers, the new-set check keeps its `catalog.json` on whichever worker ran it, so
+keep the worker's `/data` on a volume, as `docker-compose.prod.yml` does.
 
 ### Card art in object storage
 

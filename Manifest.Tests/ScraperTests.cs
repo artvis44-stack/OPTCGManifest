@@ -113,6 +113,16 @@ public class ScraperTests
     }
 
     [Fact]
+    public void AFileWithNoTriggerAnywhereIsFetchedAgain()
+    {
+        var cards = CatalogScraper.ParseCards(CardPage);
+        Assert.False(CatalogScraper.PredatesTriggers(cards));
+        foreach (var c in cards) c.Trigger = "";
+        Assert.True(CatalogScraper.PredatesTriggers(cards));
+        Assert.False(CatalogScraper.PredatesTriggers(new List<CatalogScraper.ScrapedCard>()));
+    }
+
+    [Fact]
     public void ReadsTheBlockIcon()
     {
         Assert.Equal(3, CatalogScraper.ParseCards(CardPage)[0].BlockIcon);
@@ -132,5 +142,76 @@ public class ScraperTests
         Assert.Equal("OP11-004", p.BaseId);             // grouped under its base number
         Assert.Null(p.Counter);                         // a dash counter is absent
         Assert.Equal("", p.Effect);                     // a dash effect is empty
+    }
+
+    [Fact]
+    public void ReadsTheCombinedBoostersWithTheirLineBreaks()
+    {
+        // The site splits long titles for phones with a <br> inside the option.
+        var packs = CatalogScraper.ParseSeries("""
+            <select id="series">
+            <option value="569114">BOOSTER PACK <br class="spInline">-THE AZURE SEA’S SEVEN- [OP14-EB04]</option>
+            </select>
+            """);
+        var (prefix, title, label) = CatalogScraper.SplitTitle(packs.Single().RawTitle);
+        Assert.Equal("OP14-EB04", label);
+        Assert.Equal("THE AZURE SEA’S SEVEN", title);
+        Assert.Equal("BOOSTER PACK", prefix);
+    }
+
+    [Fact]
+    public void ReadsTheLineBreakTheSiteEscapesInsideTheOption()
+    {
+        // As the live site serves it: the <br> arrives escaped, as text.
+        var packs = CatalogScraper.ParseSeries("""
+            <select id="series">
+            <option value="569101" >BOOSTER PACK &lt;br class=&quot;spInline&quot;&gt;-ROMANCE DAWN- [OP-01]</option>
+            </select>
+            """);
+        var (prefix, title, label) = CatalogScraper.SplitTitle(packs.Single().RawTitle);
+        Assert.Equal("OP-01", label);
+        Assert.Equal("ROMANCE DAWN", title);
+        Assert.Equal("BOOSTER PACK", prefix);
+    }
+
+    [Fact]
+    public void ANewSetCheckFetchesOnlyUnheldSetsAndTheGrowingLists()
+    {
+        var packs = CatalogScraper.ParseSeries(SeriesPage);
+        foreach (var p in packs)
+        {
+            var (_, title, label) = CatalogScraper.SplitTitle(p.RawTitle);
+            p.Title = title; p.Label = label;
+        }
+
+        var wanted = CatalogScraper.NotYetHeld(packs, new HashSet<string> { "ST-01", "Promotion card" });
+
+        Assert.Equal(new[] { "OP-11", null }, wanted.Select(p => p.Label));
+        Assert.Equal("Promotion card", wanted[1].Title);   // promos gain cards between sets
+    }
+
+    [Fact]
+    public void RepairsSetNamesAnOlderScrapeLeftMarkupIn()
+    {
+        var plain = new CatalogScraper.ScrapedCard
+        {
+            SetLabel = "OP-01", SetName = "BOOSTER PACK <br class=\"spInline\">-ROMANCE DAWN",
+        };
+        var combined = new CatalogScraper.ScrapedCard
+        {
+            SetLabel = "BOOSTER PACK <br class=\"spInline\">-ADVENTURE ON KAMI’S ISLAND- <br class=\"spInline\">[OP15-EB04]",
+            SetName = "BOOSTER PACK <br class=\"spInline\">-ADVENTURE ON KAMI’S ISLAND- <br class=\"spInline\">[OP15-EB04]",
+        };
+        CatalogScraper.RepairSet(plain);
+        CatalogScraper.RepairSet(combined);
+        Assert.Equal(("OP-01", "ROMANCE DAWN"), (plain.SetLabel, plain.SetName));
+        Assert.Equal(("OP15-EB04", "ADVENTURE ON KAMI’S ISLAND"), (combined.SetLabel, combined.SetName));
+    }
+
+    [Fact]
+    public void TheBundledCatalogueHasNoMarkupInItsSetNames()
+    {
+        var text = File.ReadAllText(Path.Combine(ServerFixture.RepoRoot, "catalog.json"));
+        Assert.DoesNotContain("spInline", text);
     }
 }
