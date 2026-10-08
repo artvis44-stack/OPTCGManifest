@@ -75,6 +75,19 @@ public sealed class CardDetailRow
     public string? ImageUrl { get; set; }
     public int Qty { get; set; }
     public double? PriceGbp { get; set; }
+
+    /// <summary>What each source asks for it, in the order a shown price is picked from.</summary>
+    public List<SourcePriceRow> Prices { get; set; } = new();
+}
+
+/// <summary>One source's price for a printing: Cardmarket, TCGplayer or optcgapi.com.</summary>
+public sealed class SourcePriceRow
+{
+    public string Source { get; set; } = "";
+    public string Currency { get; set; } = "";
+    public double Amount { get; set; }
+    public double Gbp { get; set; }
+    public string? Url { get; set; }
 }
 
 /// <summary>One owned card, as the collection list shows it.</summary>

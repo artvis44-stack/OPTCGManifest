@@ -69,6 +69,17 @@ public sealed class DeckPrintPost
     public string? To { get; set; }
 }
 
+/// <summary>A print added by hand: any printing of the card, what is different, and a photo (base64).</summary>
+public sealed class CustomPrintPost
+{
+    public string? CardId { get; set; }
+    public string? Variant { get; set; }
+    public string? SetLabel { get; set; }
+    public string? Rarity { get; set; }
+    public double? PriceGbp { get; set; }
+    public string? Image { get; set; }
+}
+
 public sealed class ScanPost
 {
     public List<string>? Variants { get; set; }

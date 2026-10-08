@@ -23,6 +23,18 @@ public sealed class ImageCache : IJobHandler
 
     static readonly byte[] PngMagic = { 0x89, (byte)'P', (byte)'N', (byte)'G' };
 
+    /// <summary>
+    /// image/png, image/webp or image/jpeg by the bytes, or null for anything else. The
+    /// official sites send PNG; for what they leave out, Limitless sends WebP and
+    /// TCGplayer JPEG. All are kept under the same .png key, so this is what says which.
+    /// </summary>
+    public static string? ContentTypeOf(byte[] blob) =>
+        blob.Length >= 4 && blob.AsSpan(0, 4).SequenceEqual(PngMagic) ? "image/png"
+        : blob.Length >= 12 && blob.AsSpan(0, 4).SequenceEqual("RIFF"u8)
+                            && blob.AsSpan(8, 4).SequenceEqual("WEBP"u8) ? "image/webp"
+        : blob.Length >= 3 && blob[0] == 0xFF && blob[1] == 0xD8 && blob[2] == 0xFF ? "image/jpeg"
+        : null;
+
     public ImageCache(IImageStore store, Database db, JobQueue queue, IClock clock)
     {
         _store = store;
@@ -32,7 +44,7 @@ public sealed class ImageCache : IJobHandler
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         _http.DefaultRequestHeaders.Add(
             "User-Agent", "Mozilla/5.0 (Manifest, self-hosted collection tracker)");
-        _http.DefaultRequestHeaders.Add("Accept", "image/png,image/*;q=0.8,*/*;q=0.5");
+        _http.DefaultRequestHeaders.Add("Accept", "image/png,image/webp,image/jpeg,image/*;q=0.8,*/*;q=0.5");
     }
 
     public enum State
@@ -137,8 +149,8 @@ public sealed class ImageCache : IJobHandler
             using var response = await _http.SendAsync(request, cancel);
             response.EnsureSuccessStatusCode();
             var blob = await response.Content.ReadAsByteArrayAsync(cancel);
-            if (blob.Length < 4 || !blob.Take(4).SequenceEqual(PngMagic))
-                throw new InvalidDataException("upstream did not send a PNG");
+            if (ContentTypeOf(blob) is null)
+                throw new InvalidDataException("upstream did not send a PNG, WebP or JPEG");
             await _store.Put(key, blob, cancel);
             Record(cid, "stored", url, key, null);
             Telemetry.ImageFetch("stored");

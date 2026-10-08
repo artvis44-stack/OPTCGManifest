@@ -160,6 +160,22 @@ function makePager({host, url, paint, empty}) {
 // with no price yet just shows nothing rather than a placeholder.
 const fmtGBP = v => (v || v === 0) ? '£' + v.toFixed(2) : '';
 
+// Each source's own price, in its own currency and in pounds; the card is shown at
+// the first of them (Cardmarket, then TCGplayer, then optcgapi.com).
+const PRICE_SOURCE = {cardmarket: 'Cardmarket', tcgplayer: 'TCGplayer', optcgapi: 'optcgapi',
+                      manual: 'Typed in'};
+const CURRENCY_SIGN = {EUR: '€', USD: '$', GBP: '£'};
+function pricesHTML(prices) {
+  return (prices || []).map(p => {
+    const own = (CURRENCY_SIGN[p.currency] || p.currency + ' ') + p.amount.toFixed(2);
+    const name = esc(PRICE_SOURCE[p.source] || p.source);
+    const label = p.url
+      ? `<a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${name}</a>` : name;
+    return `<div class="cv-price"><span>${label}</span><b>${esc(own)}</b>`
+      + `${p.currency === 'GBP' ? '' : `<i>${esc(fmtGBP(p.gbp))}</i>`}</div>`;
+  }).join('');
+}
+
 // Who put a card in a shared binder; nothing anywhere else.
 const addedBy = c => c.added_by && sharedView() ? 'by ' + c.added_by : '';
 
@@ -313,7 +329,7 @@ const collectionActs = c => `<div class="cv-act">
     <span class="n" data-qty>${c.qty || 0}</span>
     <button class="stepper" data-step="1" aria-label="One more">+</button>
     <span class="lbl">owned</span>
-  </div>${moveActs(c)}<div data-print-acts></div>`;
+  </div>${moveActs(c)}<div data-print-acts></div>${customActs(c)}`;
 
 function cardViewHTML(c, o) {
   o = o || {};
@@ -347,6 +363,7 @@ function cardViewHTML(c, o) {
       ${pips ? `<div class="cv-pips">${pips}</div>` : ''}
       ${st.length ? `<div class="cv-stats">${st.map(([k, v, cls]) =>
         `<div class="plaque ${cls}"><b>${esc(v)}</b><span>${k}</span></div>`).join('')}</div>` : ''}
+      <div class="cv-prices" data-prices${c.prices && c.prices.length ? '' : ' hidden'}>${pricesHTML(c.prices)}</div>
       <div class="cv-type" data-typeline${typeline ? '' : ' hidden'}>${esc(typeline)}</div>
       <div class="effect" data-effect${c.effect ? '' : ' hidden'}>${esc(c.effect || '')}</div>
       <div class="effect trigger" data-trigger${c.trigger ? '' : ' hidden'}>${esc(c.trigger || '')}</div>
@@ -447,6 +464,113 @@ function wireCollectionActs(host, c) {
   });
   wireMoveActs(host, c);
   wirePrintActs(host, c);
+  wireCustomActs(host, c);
+}
+
+/* ---------- prints added by hand ----------
+   For a print no card source lists - a promo that came with a book - anyone can
+   add it as a further printing of the card they are looking at: its own name,
+   set, rarity, photo and price, and the card's text. One added by hand can be
+   taken out again by whoever added it, or the owner. */
+const isCustomPrint = id => /_c\d+$/.test(id || '');
+
+const customActs = c => `<div class="cv-custom">
+    <button type="button" class="ghost" data-custom-open>Add a print that isn't listed</button>
+    ${isCustomPrint(c.card_id) ? `<button type="button" class="ghost danger" data-custom-remove>Remove this print</button>` : ''}
+    <form class="custom-form" data-custom-form hidden>
+      <div class="custom-h">New print of <b>${esc(c.base_id || c.card_id)}</b> ${esc(c.name || '')}</div>
+      <label>Print name<input name="variant" required maxlength="60" autocomplete="off"
+             placeholder="e.g. CHOPPER's book promo"></label>
+      <label>Set<input name="set_label" maxlength="60" autocomplete="off" value="Unnumbered Promos"></label>
+      <div class="custom-row">
+        <label>Rarity<input name="rarity" maxlength="20" autocomplete="off" value="${esc(c.rarity || '')}"></label>
+        <label>Price £<input name="price" inputmode="decimal" autocomplete="off" placeholder="optional"></label>
+      </div>
+      <label>Photo<input name="photo" type="file" accept="image/*"></label>
+      <div class="custom-btns">
+        <button type="submit" data-custom-save>Add print</button>
+        <button type="button" class="ghost" data-custom-cancel>Cancel</button>
+      </div>
+      <div class="custom-msg" data-custom-msg role="status"></div>
+    </form>
+  </div>`;
+
+// A phone photo is several megabytes; the card viewer shows it a few hundred
+// pixels wide. Shrunk to 1100px on the long edge and sent as JPEG.
+function shrinkPhoto(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 1100 / Math.max(img.naturalWidth, img.naturalHeight));
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(img.naturalWidth * scale);
+      cv.height = Math.round(img.naturalHeight * scale);
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      URL.revokeObjectURL(url);
+      resolve(cv.toDataURL('image/jpeg', .88).split(',')[1]);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('That file is not a picture this browser can read.')); };
+    img.src = url;
+  });
+}
+
+// Show a card where the viewer it came from was: the inspector or the modal.
+function reopenCard(host, card) {
+  if (host.id === 'inspector') showInspector(card);
+  else openCardModal(card);
+}
+
+function wireCustomActs(host, c) {
+  const form = host.querySelector('[data-custom-form]');
+  const open = host.querySelector('[data-custom-open]');
+  if (!form || !open) return;
+  const msg = form.querySelector('[data-custom-msg]');
+  open.onclick = () => {
+    form.hidden = !form.hidden;
+    if (!form.hidden) { form.scrollIntoView({block: 'nearest'}); form.elements.variant.focus(); }
+  };
+  form.querySelector('[data-custom-cancel]').onclick = () => { form.hidden = true; msg.textContent = ''; };
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const f = form.elements;
+    const priceText = f.price.value.trim().replace(/^£/, '').replace(',', '.');
+    const price = priceText ? Number(priceText) : null;
+    if (priceText && !(price >= 0)) { msg.textContent = 'The price has to be a number, like 12.50.'; return; }
+    const save = form.querySelector('[data-custom-save]');
+    save.disabled = true;
+    msg.textContent = 'Adding…';
+    try {
+      const file = f.photo.files[0];
+      const image = file ? await shrinkPhoto(file) : null;
+      const r = await api('/api/prints/custom', {method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({card_id: c.card_id, variant: f.variant.value, set_label: f.set_label.value,
+                              rarity: f.rarity.value, price_gbp: price, image})});
+      if (typeof doSearch === 'function') doSearch().catch(() => {});
+      reopenCard(host, r.card);
+    } catch (err) {
+      msg.textContent = err.message || 'Could not add it';
+      save.disabled = false;
+    }
+  };
+
+  const remove = host.querySelector('[data-custom-remove]');
+  if (remove) remove.onclick = async () => {
+    if (!confirm(`Remove ${c.card_id}${c.variant ? ' (' + c.variant + ')' : ''} from the catalogue?`)) return;
+    remove.disabled = true;
+    try {
+      await api('/api/prints/custom/delete', {method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({card_id: c.card_id})});
+      if (typeof doSearch === 'function') doSearch().catch(() => {});
+      if (host.id === 'inspector') clearInspector();
+      else $('#modalHost').innerHTML = '';
+    } catch (err) {
+      remove.disabled = false;
+      remove.textContent = err.message || 'Could not remove it';
+    }
+  };
 }
 
 // "This one is really the alt art": the owned card's other printings, each with
@@ -509,6 +633,7 @@ function fillEffect(c, host) {
     c.effect = card.effect;
     c.trigger = card.trigger;
     c.attributes = card.attributes;
+    c.prices = card.prices;
     const fill = (sel, text) => host.querySelectorAll(sel).forEach(el => {
       el.textContent = text || '';
       el.hidden = !text;
@@ -516,6 +641,10 @@ function fillEffect(c, host) {
     fill('[data-effect]', c.effect);
     fill('[data-trigger]', c.trigger);
     fill('[data-typeline]', typeLine(c));
+    host.querySelectorAll('[data-prices]').forEach(el => {
+      el.innerHTML = pricesHTML(c.prices);
+      el.hidden = !(c.prices && c.prices.length);
+    });
   }).catch(() => {});
 }
 

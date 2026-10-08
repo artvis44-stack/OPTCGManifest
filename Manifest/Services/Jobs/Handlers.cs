@@ -98,15 +98,20 @@ public sealed class ScrapeCatalogHandler(AppPaths paths, Database db, JobQueue q
         // The Japanese site is a bonus: if it cannot be read, the English sets
         // still go in, and its last good scrape stays as it was.
         var japanese = await CatalogScraper.ScrapeNew(paths, CatalogScraper.Japanese);
+        // So are Limitless and TCGplayer, for the cards and prints the English site leaves out.
+        var limitless = await LimitlessScraper.Refresh(paths);
         if (db.Initialise(forceReseed: true) is { } error)
             throw new InvalidOperationException(error);
-        if (outcome.Added > 0)
+        if (outcome.Added > 0 || limitless is { Added: > 0 } or { Prints: > 0 } or { TcgplayerPrints: > 0 })
             queue.Enqueue(JobTypes.RefreshPrices, new { }, dedupeKey: "after-scrape:" + JobTypes.RefreshPrices);
         return new
         {
             added = outcome.Added, printings = outcome.Printings, sets = outcome.Fetched,
             japanese = japanese is null ? null
                 : new { added = japanese.Added, printings = japanese.Printings, sets = japanese.Fetched },
+            limitless = limitless is null ? null
+                : new { added = limitless.Added, prints = limitless.Prints,
+                        tcgplayer_prints = limitless.TcgplayerPrints, not_listed = limitless.NotListed },
         };
     }
 }

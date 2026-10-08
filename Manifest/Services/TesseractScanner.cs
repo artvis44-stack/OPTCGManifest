@@ -78,8 +78,11 @@ public sealed class TesseractScanner
                     {
                         var cid = CardId.Normalise(candidate);
                         if (cid is null) continue;
-                        if (CardRepository.Resolve(conn, cid) is not null)
-                            return new Reading(cid, "");     // in the catalogue: trust it
+                        // In the catalogue: trust it. A print suffix that is not - often
+                        // the rarity letter beside the number, "C1" - falls back to the
+                        // base card, and that is the one reported.
+                        if (CardRepository.Resolve(conn, cid) is { } row)
+                            return new Reading(row.CardId, "");
                         fallback ??= cid;                    // valid shape, unknown card
                     }
                 }

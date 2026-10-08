@@ -196,8 +196,21 @@ Nothing to run. The server does both by itself, once a day:
   the catalogue does not have yet, plus the promo lists, which grow between sets, and
   adds them. When nothing is new that is a handful of requests. Cards logged before their
   set arrived pick up their name and picture.
-- **Prices.** Market prices from [optcgapi.com](https://optcgapi.com), converted to
-  GBP at the day's rate. A new set's prices are fetched straight after it arrives.
+- **What the official site leaves out.** Promos only the Japanese site lists, the
+  English prints of anniversary sets, event and championship packs, stamped release-event
+  and pre-release cards, and sets too new for the official site, from
+  [Limitless](https://onepiece.limitlesstcg.com) and TCGplayer (through
+  [tcgcsv.com](https://tcgcsv.com)). They are kept in `catalog-extra.json`, beside the
+  official catalogue; a print TCGplayer alone knows is numbered `_t1`, `_t2`... under
+  its card. About 150 page requests, a few minutes.
+- **Prices.** Cardmarket (EUR, as Limitless shows it), TCGplayer (USD, from tcgcsv.com)
+  and [optcgapi.com](https://optcgapi.com), each kept and shown on the card, converted to
+  GBP at the day's rate. A card's headline price is Cardmarket's, else TCGplayer's, else
+  optcgapi.com's. A new set's prices are fetched straight after it arrives.
+- **What no source lists.** A print none of these has - a promo that came with a book,
+  say - can be added by hand: open the card and press **Add a print that isn't listed**,
+  with its name, set, rarity, a photo and, if you like, a price. It is filed as `_c1`,
+  `_c2`... under its card, reads as that card everywhere, and survives every refresh.
 
 To do either now, sign in as the owner (the first account made on the server),
 press **Admin** at the top, and use **Check for new sets** or **Refresh prices**
@@ -214,6 +227,7 @@ From a console, the same work is available as subcommands:
 
 ```
 dotnet run --project Manifest -- scrape --new     # add sets it does not have yet
+dotnet run --project Manifest -- scrape --limitless  # cards and prints from Limitless/TCGplayer
 dotnet run --project Manifest -- --reseed         # load catalog.json into the database
 dotnet run --project Manifest -- refresh-prices
 ```
@@ -254,6 +268,7 @@ runs them itself (see *Keeping cards and prices current*):
 dotnet run --project Manifest -- scrape --new      # add new sets from the official site
 dotnet run --project Manifest -- refresh-prices    # market prices, in GBP
 dotnet run --project Manifest -- refresh-catalog   # rebuild from the GitHub dataset
+dotnet run --project Manifest -- print add EB02-003 --name "Book promo" --photo card.jpg
 ```
 
 ### PostgreSQL instead of SQLite

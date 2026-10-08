@@ -6,7 +6,7 @@ namespace Manifest.Services;
 /// <summary>Turning what a human or a camera produces into a card number.</summary>
 public static partial class CardId
 {
-    [GeneratedRegex(@"((?:OP|ST|EB|PRB)\s?\d{2}\s?-\s?\d{3}|P\s?-\s?\d{3})[\s_-]*([PR]\d)?(?:[\s_-]*(JP)\b)?",
+    [GeneratedRegex(@"((?:OP|ST|EB|PRB)\s?\d{2}\s?-\s?\d{3}|P\s?-\s?\d{3})[\s_-]*([PRTC]\d{1,3})?(?:[\s_-]*(JP)\b)?",
                     RegexOptions.IgnoreCase)]
     private static partial Regex IdPattern();
 

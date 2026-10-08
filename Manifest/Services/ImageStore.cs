@@ -139,7 +139,7 @@ public sealed class S3ImageStore : IImageStore
             BucketName = _bucket,
             Key = key,
             InputStream = body,
-            ContentType = "image/png",
+            ContentType = ImageCache.ContentTypeOf(png) ?? "image/png",
             // Card art for one printing never changes, so caches anywhere may keep it.
             Headers = { CacheControl = "public, max-age=31536000, immutable" },
         }, cancel);

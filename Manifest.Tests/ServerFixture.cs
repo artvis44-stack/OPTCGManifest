@@ -119,9 +119,9 @@ public sealed class ServerFixture : IAsyncLifetime
         JsonSerializer.Serialize(payload, Manifest.Json.Options),
         Encoding.UTF8, "application/json");
 
-    public async Task Start()
+    public async Task Start(params string[] extra)
     {
-        _server = StartServer(WorkDir, Port, DatabaseUrl);
+        _server = StartServer(WorkDir, Port, DatabaseUrl, extra);
         for (var i = 0; i < 120; i++)
         {
             try
@@ -171,10 +171,11 @@ public sealed class ServerFixture : IAsyncLifetime
         return proc;
     }
 
-    public async Task Restart()
+    /// <param name="extra">Command-line flags for the new process, such as --reseed.</param>
+    public async Task Restart(params string[] extra)
     {
         Stop();
-        await Start();
+        await Start(extra);
         // Sessions outlive a restart - they are rows in the database, not memory -
         // so the existing cookie is still good and this only re-signs-in if the
         // work directory was wiped underneath us.

@@ -282,6 +282,35 @@ public sealed class Database
             fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
+        -- Prints someone added by hand because no card source lists them. Each also
+        -- has a catalog row, put back whenever the catalogue is reseeded; a deleted
+        -- one is kept, marked, so its id is never handed out again.
+        -- See Migrations/Postgres/0006_custom_prints.sql.
+        CREATE TABLE IF NOT EXISTS custom_prints (
+            card_id    TEXT PRIMARY KEY,
+            base_id    TEXT NOT NULL,
+            name       TEXT NOT NULL,
+            variant    TEXT NOT NULL,
+            set_label  TEXT,
+            rarity     TEXT,
+            created_by INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            deleted_at TEXT
+        );
+
+        -- Each source's price for a printing; prices holds the one it is shown at.
+        -- See Migrations/Postgres/0005_card_prices.sql.
+        CREATE TABLE IF NOT EXISTS card_prices (
+            card_id    TEXT NOT NULL,
+            source     TEXT NOT NULL,
+            currency   TEXT NOT NULL,
+            amount     REAL NOT NULL,
+            gbp        REAL NOT NULL,
+            url        TEXT,
+            fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (card_id, source)
+        );
+
         CREATE TABLE IF NOT EXISTS decks (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id         INTEGER NOT NULL DEFAULT 0,
@@ -538,6 +567,16 @@ public sealed class Database
             return null;
         }
 
+        // Cards the official English site leaves out, from Limitless - until it lists
+        // them itself. Before the Japanese prints, so theirs read in English too.
+        if (File.Exists(_paths.CatalogExtra))
+        {
+            using var stream = File.OpenRead(_paths.CatalogExtra);
+            var extra = JsonSerializer.Deserialize<List<CatalogRow>>(stream, Json.Options) ?? new();
+            var official = rows.Select(r => r.CardId).ToHashSet(StringComparer.Ordinal);
+            rows.AddRange(extra.Where(r => !string.IsNullOrWhiteSpace(r.CardId) && official.Add(r.CardId)));
+        }
+
         // Japanese prints, when the site has been scraped for them, are seeded as
         // further printings of the same card numbers.
         if (File.Exists(_paths.CatalogJapanese))
@@ -547,8 +586,20 @@ public sealed class Database
             rows.AddRange(JapanesePrints.FromScrape(rows, jp));
         }
 
-        conn.Exec("DELETE FROM catalog");
+        // Prints added by hand, last, so each takes its card text from the rows above.
+        rows.AddRange(CustomPrintRepository.Restore(conn, rows));
 
+        conn.Exec("DELETE FROM catalog");
+        InsertCatalog(conn, rows);
+
+        tx.Commit();
+        Console.WriteLine($"catalog seeded: {rows.Count} printings");
+        return null;
+    }
+
+    /// <summary>Catalogue rows in, one INSERT each, on the caller's connection and transaction.</summary>
+    public static void InsertCatalog(DbConnection conn, IEnumerable<CatalogRow> rows)
+    {
         using var insert = conn.CreateCommand();
         insert.CommandText = """
             INSERT INTO catalog
@@ -590,9 +641,5 @@ public sealed class Database
             p[17].Value = (object?)r.ImageUrl ?? DBNull.Value;
             insert.ExecuteNonQuery();
         }
-
-        tx.Commit();
-        Console.WriteLine($"catalog seeded: {rows.Count} printings");
-        return null;
     }
 }

@@ -31,6 +31,7 @@ public class CardIdTests
     [InlineData("I have an OP01-016 spare", "OP01-016")] // inside a sentence
     [InlineData("OP01-016_p1", "OP01-016_p1")]
     [InlineData("OP01-016 P1", "OP01-016_p1")]
+    [InlineData("EB02-003_c1", "EB02-003_c1")]       // a print added by hand
     [InlineData("P-001", "P-001")]
     [InlineData("OP01-016_jp", "OP01-016_jp")]
     [InlineData("op01-016_p1_JP", "OP01-016_p1_jp")]
