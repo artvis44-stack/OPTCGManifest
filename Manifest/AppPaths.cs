@@ -11,6 +11,7 @@ public sealed class AppPaths
     public string DbPath => Path.Combine(Root, "manifest.db");
     public string Catalog => Path.Combine(Root, "catalog.json");
     public string CatalogJapanese => Path.Combine(Root, "catalog-jp.json");
+    public string CatalogExtra => Path.Combine(Root, Tools.LimitlessScraper.FileName);
     public string CaPem => Path.Combine(Root, "ca.pem");
     public string CertPem => Path.Combine(Root, "cert.pem");
     public string KeyPem => Path.Combine(Root, "key.pem");

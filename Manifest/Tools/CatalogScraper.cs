@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace Manifest.Tools;
@@ -60,6 +61,15 @@ public static partial class CatalogScraper
         public string Trigger { get; set; } = "";
         public int? BlockIcon { get; set; }
         public string ImageUrl { get; set; } = "";
+
+        /// <summary>
+        /// For catalog-extra.json: where a printing came from - "limitless" for a card
+        /// read off its own Limitless page, "limitless-print" and "tcgplayer" for the
+        /// further prints built from the product lists - and the TCGplayer product a
+        /// "tcgplayer" one is, which keeps its _tN number the same from run to run.
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Source { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public long? TcgplayerId { get; set; }
     }
 
     [GeneratedRegex(@"(?is)<br\s*/?>")] private static partial Regex BrTag();
@@ -76,7 +86,7 @@ public static partial class CatalogScraper
     private static partial Regex OptionTag();
     [GeneratedRegex(@"(?is)<dl\b[^>]*\bid=""([^""]+)""[^>]*>(.*?)</dl>")]
     private static partial Regex DlBlock();
-    [GeneratedRegex(@"^[A-Z]{1,4}\d{0,2}-?\d{3}(_[a-z]\d)?$", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^[A-Z]{1,4}\d{0,2}-?\d{3}(_[a-z]\d{1,3})?$", RegexOptions.IgnoreCase)]
     private static partial Regex CardIdShape();
     [GeneratedRegex(@"(?is)<span[^>]*>(.*?)</span>")] private static partial Regex SpanTag();
     [GeneratedRegex(@"(?is)<div\s+class=""[^""]*\bcardName\b[^""]*""[^>]*>(.*?)</div>")]
@@ -305,6 +315,8 @@ public static partial class CatalogScraper
 
     public static async Task<int> Run(string[] args, AppPaths paths)
     {
+        if (args.Contains("--limitless")) return await LimitlessScraper.Run(args, paths);
+
         var only = new List<string>();
         var listOnly = false;
         var merge = false;

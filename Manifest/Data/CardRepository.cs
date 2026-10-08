@@ -477,7 +477,28 @@ public sealed class CardRepository : ICardRepository, IScanRepository
             };
         }
 
-        return Lookup(cid) ?? Lookup(cid.Split('_')[0]);
+        var card = Lookup(cid) ?? Lookup(cid.Split('_')[0]);
+        if (card is not null) card.Prices = SourcePrices(conn, card.CardId);
+        return card;
+    }
+
+    static List<SourcePriceRow> SourcePrices(System.Data.Common.DbConnection conn, string cardId)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT source, currency, amount, gbp, url FROM card_prices WHERE card_id = @id";
+        cmd.Bind("@id", cardId);
+        var rows = new List<SourcePriceRow>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            rows.Add(new SourcePriceRow
+            {
+                Source = r.Text("source"),
+                Currency = r.Text("currency"),
+                Amount = r.Real("amount") ?? 0,
+                Gbp = r.Real("gbp") ?? 0,
+                Url = r.Str("url"),
+            });
+        return rows.OrderBy(p => Array.IndexOf(Tools.PriceRefresh.Preference, p.Source)).ToList();
     }
 
     public Stats Stats(BinderScope scope)

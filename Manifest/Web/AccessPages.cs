@@ -354,9 +354,10 @@ load();
 
 const JOBS = {
   'scrape-catalog': { title: 'New sets', button: 'Check for new sets',
-    what: 'Looks at the official card list and adds any set the catalogue does not have yet.' },
+    what: 'Looks at the official card lists for sets the catalogue does not have yet, '
+      + 'and at Limitless and TCGplayer for the cards and prints they leave out.' },
   'refresh-prices': { title: 'Prices', button: 'Refresh prices',
-    what: 'Market prices from optcgapi.com, in GBP.' },
+    what: 'Cardmarket, TCGplayer and optcgapi.com prices, in GBP; a card shows the first of them it has.' },
 };
 let dataTimer = null;
 

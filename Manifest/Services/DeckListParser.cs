@@ -8,7 +8,7 @@ public static partial class DeckListParser
     [GeneratedRegex(@"^\s*(\d{1,3})\s*x?\s*$", RegexOptions.IgnoreCase)]
     private static partial Regex QtyOnly();
 
-    [GeneratedRegex(@"((?:OP|ST|EB|PRB)\s?\d{2}\s?-\s?\d{3}|P\s?-\s?\d{3})[\s_-]*([PR]\d)?",
+    [GeneratedRegex(@"((?:OP|ST|EB|PRB)\s?\d{2}\s?-\s?\d{3}|P\s?-\s?\d{3})[\s_-]*([PRT]\d{1,3})?",
                     RegexOptions.IgnoreCase)]
     private static partial Regex CardIdInLine();
 

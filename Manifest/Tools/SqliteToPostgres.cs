@@ -40,6 +40,7 @@ public static class SqliteToPostgres
                     + "colors, cost, power, counter, types, attributes, effect, trigger_text, "
                     + "block_icon, image_url", null),
         ("prices", "card_id, usd, gbp, fetched_at", null),
+        ("card_prices", "card_id, source, currency, amount, gbp, url, fetched_at", null),
         ("users", "id, username, password_hash, email, created_at, last_seen", null),
         ("binders", "id, name, kind, owner_id, visible, created_at", null),
         ("binder_members", "binder_id, user_id, added_at",
@@ -181,7 +182,7 @@ public static class SqliteToPostgres
         // Replaced rather than merged: the server may already have seeded the
         // target's catalogue from catalog.json, and the file's is the one its
         // collection and decks were made against.
-        dst.Exec("DELETE FROM prices; DELETE FROM catalog;");
+        dst.Exec("DELETE FROM card_prices; DELETE FROM prices; DELETE FROM catalog;");
 
         var copied = new Dictionary<string, long>();
         foreach (var (table, columns, where) in Tables)

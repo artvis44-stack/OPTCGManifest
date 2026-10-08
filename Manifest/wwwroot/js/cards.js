@@ -160,6 +160,21 @@ function makePager({host, url, paint, empty}) {
 // with no price yet just shows nothing rather than a placeholder.
 const fmtGBP = v => (v || v === 0) ? '£' + v.toFixed(2) : '';
 
+// Each source's own price, in its own currency and in pounds; the card is shown at
+// the first of them (Cardmarket, then TCGplayer, then optcgapi.com).
+const PRICE_SOURCE = {cardmarket: 'Cardmarket', tcgplayer: 'TCGplayer', optcgapi: 'optcgapi'};
+const CURRENCY_SIGN = {EUR: '€', USD: '$', GBP: '£'};
+function pricesHTML(prices) {
+  return (prices || []).map(p => {
+    const own = (CURRENCY_SIGN[p.currency] || p.currency + ' ') + p.amount.toFixed(2);
+    const name = esc(PRICE_SOURCE[p.source] || p.source);
+    const label = p.url
+      ? `<a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${name}</a>` : name;
+    return `<div class="cv-price"><span>${label}</span><b>${esc(own)}</b>`
+      + `${p.currency === 'GBP' ? '' : `<i>${esc(fmtGBP(p.gbp))}</i>`}</div>`;
+  }).join('');
+}
+
 // Who put a card in a shared binder; nothing anywhere else.
 const addedBy = c => c.added_by && sharedView() ? 'by ' + c.added_by : '';
 
@@ -351,6 +366,7 @@ function cardViewHTML(c, o) {
       <div class="effect" data-effect${c.effect ? '' : ' hidden'}>${esc(c.effect || '')}</div>
       <div class="effect trigger" data-trigger${c.trigger ? '' : ' hidden'}>${esc(c.trigger || '')}</div>
       ${meta.length ? `<div class="cv-meta">${meta.map(t => `<span>${esc(t)}</span>`).join('')}</div>` : ''}
+      <div class="cv-prices" data-prices${c.prices && c.prices.length ? '' : ' hidden'}>${pricesHTML(c.prices)}</div>
       ${o.ownRow || ''}
       ${o.actions || ''}
     </div>
@@ -509,6 +525,7 @@ function fillEffect(c, host) {
     c.effect = card.effect;
     c.trigger = card.trigger;
     c.attributes = card.attributes;
+    c.prices = card.prices;
     const fill = (sel, text) => host.querySelectorAll(sel).forEach(el => {
       el.textContent = text || '';
       el.hidden = !text;
@@ -516,6 +533,10 @@ function fillEffect(c, host) {
     fill('[data-effect]', c.effect);
     fill('[data-trigger]', c.trigger);
     fill('[data-typeline]', typeLine(c));
+    host.querySelectorAll('[data-prices]').forEach(el => {
+      el.innerHTML = pricesHTML(c.prices);
+      el.hidden = !(c.prices && c.prices.length);
+    });
   }).catch(() => {});
 }
 

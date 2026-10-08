@@ -282,6 +282,19 @@ public sealed class Database
             fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
+        -- Each source's price for a printing; prices holds the one it is shown at.
+        -- See Migrations/Postgres/0005_card_prices.sql.
+        CREATE TABLE IF NOT EXISTS card_prices (
+            card_id    TEXT NOT NULL,
+            source     TEXT NOT NULL,
+            currency   TEXT NOT NULL,
+            amount     REAL NOT NULL,
+            gbp        REAL NOT NULL,
+            url        TEXT,
+            fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (card_id, source)
+        );
+
         CREATE TABLE IF NOT EXISTS decks (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id         INTEGER NOT NULL DEFAULT 0,
@@ -536,6 +549,16 @@ public sealed class Database
             Console.WriteLine($"catalog ready: {have} printings, without Trigger text "
                               + "(catalog.json predates it)");
             return null;
+        }
+
+        // Cards the official English site leaves out, from Limitless - until it lists
+        // them itself. Before the Japanese prints, so theirs read in English too.
+        if (File.Exists(_paths.CatalogExtra))
+        {
+            using var stream = File.OpenRead(_paths.CatalogExtra);
+            var extra = JsonSerializer.Deserialize<List<CatalogRow>>(stream, Json.Options) ?? new();
+            var official = rows.Select(r => r.CardId).ToHashSet(StringComparer.Ordinal);
+            rows.AddRange(extra.Where(r => !string.IsNullOrWhiteSpace(r.CardId) && official.Add(r.CardId)));
         }
 
         // Japanese prints, when the site has been scraped for them, are seeded as

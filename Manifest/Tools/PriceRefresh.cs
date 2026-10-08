@@ -5,8 +5,10 @@ using Manifest.Data;
 namespace Manifest.Tools;
 
 /// <summary>
-/// Pull market prices from optcgapi.com (free, unofficial, refreshed daily there) and
-/// store them in GBP, converted at the current USD/GBP rate.
+/// Pull market prices from three places and store each, in its own currency and in
+/// GBP: Cardmarket (EUR, as Limitless shows it), TCGplayer (USD, from tcgcsv.com) and
+/// optcgapi.com (USD, free and unofficial). A card is shown at the first of those
+/// that has a price for it - see <see cref="Preference"/>.
 ///
 /// Safe to re-run anytime — run it on a schedule to keep prices current.
 /// </summary>
@@ -26,7 +28,7 @@ public static partial class PriceRefresh
         ("promo", new[] { "https://optcgapi.com/api/allPromoCards/",
                           "https://optcgapi.com/api/allPromos/" }),
     };
-    const string FxUrl = "https://api.frankfurter.dev/v1/latest?base=USD&symbols=GBP";
+    const string FxUrl = "https://api.frankfurter.dev/v1/latest?base=USD&symbols=GBP,EUR";
 
     sealed class FxResponse
     {
@@ -170,6 +172,61 @@ public static partial class PriceRefresh
         return priced;
     }
 
+    /// <summary>One source's price for one printing, as stored in card_prices.</summary>
+    public sealed record SourcePrice(string CardId, string Source, string Currency, double Amount, string? Url);
+
+    /// <summary>The order a card's shown price is picked in: the first source that has one.</summary>
+    public static readonly string[] Preference = { "cardmarket", "tcgplayer", "optcgapi" };
+
+    const string CardmarketBase = "https://www.cardmarket.com/en/OnePiece/Products/Singles/";
+
+    /// <summary>
+    /// Cardmarket (EUR) and TCGplayer (USD) prices for the printings in price-links.json:
+    /// Cardmarket's from Limitless's product lists, TCGplayer's from tcgcsv.com - fresher
+    /// than the copy Limitless shows, which stands in when tcgcsv.com has none.
+    /// </summary>
+    public static List<SourcePrice> FromLinks(IReadOnlyList<ExtraPrints.Link> links,
+                                              IReadOnlyList<LimitlessPrints.Print>? limitless,
+                                              IReadOnlyDictionary<long, double>? tcgplayer)
+    {
+        var byHref = (limitless ?? Array.Empty<LimitlessPrints.Print>()).GroupBy(p => p.Href).ToDictionary(g => g.Key, g => g.First());
+        var prices = new List<SourcePrice>();
+        foreach (var link in links)
+        {
+            var print = link.Limitless is { } href ? byHref.GetValueOrDefault(href) : null;
+            if (print?.Eur is { } eur)
+                prices.Add(new SourcePrice(link.CardId, "cardmarket", "EUR", eur,
+                                           link.Cardmarket is { } cm ? CardmarketBase + cm : null));
+
+            double? usd = link.Tcgplayer is { } id && tcgplayer?.TryGetValue(id, out var market) == true
+                ? market : print?.Usd;
+            if (usd is { } u)
+                prices.Add(new SourcePrice(link.CardId, "tcgplayer", "USD", u,
+                                           link.Tcgplayer is { } pid ? $"https://www.tcgplayer.com/product/{pid}" : null));
+        }
+        return prices;
+    }
+
+    /// <summary>
+    /// The linked prices, less those for a printing whose TCGplayer price is more than
+    /// three times off optcgapi.com's. optcgapi.com goes by the official site's numbers;
+    /// a gap that size means Limitless filed some other art under this one's number,
+    /// and its Cardmarket price is that other card's too.
+    /// </summary>
+    public static IEnumerable<SourcePrice> Plausible(IEnumerable<SourcePrice> linked,
+                                                     IReadOnlyDictionary<string, double> optcgapi)
+    {
+        var list = linked.ToList();
+        var doubtful = list
+            .Where(p => p.Source == "tcgplayer" && optcgapi.TryGetValue(p.CardId, out var o)
+                        && Math.Max(o, p.Amount) > 2 && Math.Max(o / p.Amount, p.Amount / o) > 3)
+            .Select(p => p.CardId).ToHashSet(StringComparer.Ordinal);
+        if (doubtful.Count > 0)
+            Console.WriteLine($"  {doubtful.Count} printings' Cardmarket and TCGplayer prices left out: "
+                              + "too far from optcgapi.com's to be the same card");
+        return list.Where(p => !doubtful.Contains(p.CardId));
+    }
+
     public static async Task<int> Run(AppPaths paths, Database db)
     {
         if (db.SqliteFile is { } file && !File.Exists(file))
@@ -182,19 +239,20 @@ public static partial class PriceRefresh
         http.DefaultRequestHeaders.Add(
             "User-Agent", "Manifest (self-hosted collection tracker)");
 
-        double rate;
+        double usdGbp, eurGbp;
         try
         {
             var fx = JsonSerializer.Deserialize<FxResponse>(
                 await http.GetStringAsync(FxUrl), Upstream)!;
-            rate = fx.Rates["GBP"];
+            usdGbp = fx.Rates["GBP"];
+            eurGbp = fx.Rates["GBP"] / fx.Rates["EUR"];
         }
         catch (Exception e)
         {
-            Console.Error.WriteLine($"could not fetch the USD/GBP rate: {e.Message}");
+            Console.Error.WriteLine($"could not fetch exchange rates: {e.Message}");
             return 1;
         }
-        Console.WriteLine($"USD/GBP rate: {rate}");
+        Console.WriteLine($"rates: USD/GBP {usdGbp}, EUR/GBP {eurGbp:0.#####}");
 
         var api = new List<ApiCard>();
         foreach (var (source, urls) in CardSources)
@@ -218,11 +276,27 @@ public static partial class PriceRefresh
                 }
             }
         }
-
         if (api.Count == 0)
+            Console.WriteLine("  got no prices from optcgapi.com — it may be down or have changed shape");
+
+        // Cardmarket and TCGplayer, for what the last catalogue refresh tied to them.
+        var links = await ExtraPrints.ReadLinks(paths);
+        var linked = new List<SourcePrice>();
+        if (links.Count == 0)
+            Console.WriteLine($"  no {ExtraPrints.LinksFileName} yet, so no Cardmarket or TCGplayer prices: "
+                              + "run `manifest scrape --limitless` first");
+        else
         {
-            Console.Error.WriteLine(
-                "got no price data — optcgapi.com may be down or have changed shape");
+            var limitless = await LimitlessPrints.Crawl();
+            var tcgplayer = await TcgCsv.Prices() is { } list ? TcgCsv.ByProduct(list) : null;
+            linked = FromLinks(links, limitless, tcgplayer);
+            Console.WriteLine($"  {linked.Count(p => p.Source == "cardmarket")} Cardmarket and "
+                              + $"{linked.Count(p => p.Source == "tcgplayer")} TCGplayer prices");
+        }
+
+        if (api.Count == 0 && linked.Count == 0)
+        {
+            Console.Error.WriteLine("got no prices from anywhere; the ones stored are left as they were");
             return 1;
         }
 
@@ -237,48 +311,78 @@ public static partial class PriceRefresh
                                              r.IsDBNull(2) ? null : r.GetString(2)));
         }
 
-        var rows = Match(api, catalog).ToDictionary(
-            kv => kv.Key,
-            kv => (Id: kv.Key, Usd: kv.Value,
-                   Gbp: Math.Round(kv.Value * rate, 2, MidpointRounding.ToEven)));
+        var optcgapi = Match(api, catalog);
+        var all = optcgapi
+            .Select(kv => new SourcePrice(kv.Key, "optcgapi", "USD", kv.Value, null))
+            .Concat(Plausible(linked, optcgapi))
+            .ToList();
+        double Gbp(SourcePrice p) =>
+            Math.Round(p.Amount * (p.Currency == "EUR" ? eurGbp : usdGbp), 2, MidpointRounding.ToEven);
 
-        // An old SQLite file may predate the prices table. PostgreSQL's comes from
+        // An old SQLite file may predate the price tables. PostgreSQL's come from
         // the migrations, like every other table there.
         if (!db.Dialect.IsPostgres)
-            conn.Exec("""
-                CREATE TABLE IF NOT EXISTS prices (
-                    card_id    TEXT PRIMARY KEY,
-                    usd        REAL,
-                    gbp        REAL,
-                    fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
-                )
-                """);
+            db.EnsureSchema();
 
         using (var tx = conn.BeginTransaction())
         {
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = $"""
-                INSERT INTO prices (card_id, usd, gbp, fetched_at)
-                VALUES (@id,@usd,@gbp,{db.Dialect.Now})
-                ON CONFLICT(card_id) DO UPDATE
-                  SET usd = excluded.usd, gbp = excluded.gbp,
-                      fetched_at = excluded.fetched_at
-                """;
-            var id = cmd.Bind("@id", null);
-            var usd = cmd.Bind("@usd", null);
-            var gbp = cmd.Bind("@gbp", null);
-            foreach (var (cardId, u, g) in rows.Values)
+            // A source that answered this time replaces what it said last time; one that
+            // did not keeps its last prices rather than leaving cards with none.
+            foreach (var source in all.Select(p => p.Source).Distinct())
             {
-                id.Value = cardId; usd.Value = u; gbp.Value = g;
+                using var clear = conn.CreateCommand();
+                clear.CommandText = "DELETE FROM card_prices WHERE source = @source";
+                clear.Bind("@source", source);
+                clear.ExecuteNonQuery();
+            }
+
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = $"""
+                    INSERT INTO card_prices (card_id, source, currency, amount, gbp, url, fetched_at)
+                    VALUES (@id, @source, @currency, @amount, @gbp, @url, {db.Dialect.Now})
+                    ON CONFLICT (card_id, source) DO NOTHING
+                    """;
+                var p = new[] { "@id", "@source", "@currency", "@amount", "@gbp", "@url" }
+                    .Select(n => cmd.Bind(n, null)).ToArray();
+                foreach (var price in all)
+                {
+                    p[0].Value = price.CardId; p[1].Value = price.Source; p[2].Value = price.Currency;
+                    p[3].Value = price.Amount; p[4].Value = Gbp(price);
+                    p[5].Value = (object?)price.Url ?? DBNull.Value;
+                    cmd.ExecuteNonQuery();
+                }
+            }
+
+            // The price a card is shown at: the first source in Preference that has one,
+            // and the US dollar figure from TCGplayer where there is one.
+            using (var cmd = conn.CreateCommand())
+            {
+                string Pick(string column) => "COALESCE(" + string.Join(", ", Preference.Select(s =>
+                    $"MAX(CASE WHEN source = '{s}' THEN {column} END)")) + ")";
+                cmd.CommandText = $"""
+                    INSERT INTO prices (card_id, usd, gbp, fetched_at)
+                    SELECT card_id,
+                           COALESCE(MAX(CASE WHEN source = 'tcgplayer' THEN amount END),
+                                    MAX(CASE WHEN source = 'optcgapi' THEN amount END)),
+                           {Pick("gbp")}, {db.Dialect.Now}
+                    FROM card_prices GROUP BY card_id
+                    ON CONFLICT(card_id) DO UPDATE
+                      SET usd = excluded.usd, gbp = excluded.gbp, fetched_at = excluded.fetched_at
+                    """;
                 cmd.ExecuteNonQuery();
             }
             tx.Commit();
         }
 
         var known = catalog.Select(c => c.CardId).ToHashSet();
-        var matched = rows.Keys.Count(known.Contains);
-        Console.WriteLine($"priced {rows.Count} printings ({matched} of the {known.Count} "
-                          + "in your catalog)");
+        foreach (var source in Preference)
+        {
+            var ids = all.Where(p => p.Source == source).Select(p => p.CardId).ToHashSet();
+            Console.WriteLine($"  {source,-10} {ids.Count,6} printings ({ids.Count(known.Contains)} in your catalog)");
+        }
+        var priced = all.Select(p => p.CardId).Where(known.Contains).Distinct().Count();
+        Console.WriteLine($"priced {priced} of the {known.Count} printings in your catalog");
         return 0;
     }
 }

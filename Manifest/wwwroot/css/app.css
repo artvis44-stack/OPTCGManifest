@@ -340,6 +340,13 @@ select option{background:var(--ink);color:var(--text)}
 .cv-meta span{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.07em;
   background:rgba(240,232,214,.07);border:1px solid var(--edge);border-radius:6px;
   padding:4px 8px;color:var(--dim)}
+.cv-prices{margin-top:11px;display:grid;gap:4px}
+.cv-price{display:flex;align-items:baseline;gap:8px;font-family:var(--mono);font-size:11px;color:var(--dim)}
+.cv-price span{flex:1;letter-spacing:.05em}
+.cv-price a{color:inherit;text-decoration:underline;text-decoration-color:var(--edge);text-underline-offset:2px}
+.cv-price a:hover{color:var(--text)}
+.cv-price b{color:var(--gold-hi);font-weight:600}
+.cv-price i{font-style:normal;min-width:58px;text-align:right}
 .cv-own{display:flex;justify-content:space-between;gap:10px;margin-top:12px;padding-top:11px;
   border-top:1px solid var(--edge);font-family:var(--mono);font-size:11px;color:var(--dim)}
 .cv-own b{color:var(--gold-hi)}

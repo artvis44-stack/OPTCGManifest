@@ -101,7 +101,7 @@ public static class Endpoints
             switch (got.State)
             {
                 case ImageCache.State.Found:
-                    await ctx.Send(200, got.Bytes!, "image/png", new[]
+                    await ctx.Send(200, got.Bytes!, ImageCache.ContentTypeOf(got.Bytes!) ?? "image/png", new[]
                     {
                         ("Cache-Control", "public, max-age=31536000, immutable"),
                     });
