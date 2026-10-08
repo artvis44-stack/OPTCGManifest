@@ -340,13 +340,16 @@ select option{background:var(--ink);color:var(--text)}
 .cv-meta span{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.07em;
   background:rgba(240,232,214,.07);border:1px solid var(--edge);border-radius:6px;
   padding:4px 8px;color:var(--dim)}
-.cv-prices{margin-top:11px;display:grid;gap:4px}
-.cv-price{display:flex;align-items:baseline;gap:8px;font-family:var(--mono);font-size:11px;color:var(--dim)}
-.cv-price span{flex:1;letter-spacing:.05em}
-.cv-price a{color:inherit;text-decoration:underline;text-decoration-color:var(--edge);text-underline-offset:2px}
-.cv-price a:hover{color:var(--text)}
-.cv-price b{color:var(--gold-hi);font-weight:600}
-.cv-price i{font-style:normal;min-width:58px;text-align:right}
+/* each shop's price, right under the stats where the market figure is */
+.cv-prices{margin-top:8px;display:grid;border:1px solid var(--edge);border-radius:var(--r-sm);
+  overflow:hidden}
+.cv-price{display:flex;align-items:baseline;gap:10px;padding:8px 12px;font-size:13.5px;color:var(--text)}
+.cv-price+.cv-price{border-top:1px solid var(--edge)}
+.cv-price span{flex:1;font-weight:500}
+.cv-price a{color:inherit;text-decoration:underline;text-decoration-color:var(--dim);text-underline-offset:3px}
+.cv-price a:hover{color:var(--gold-hi)}
+.cv-price b{font-family:var(--mono);font-size:14.5px;color:var(--gold-hi);font-weight:600}
+.cv-price i{font-family:var(--mono);font-style:normal;min-width:64px;text-align:right;color:var(--dim)}
 .cv-own{display:flex;justify-content:space-between;gap:10px;margin-top:12px;padding-top:11px;
   border-top:1px solid var(--edge);font-family:var(--mono);font-size:11px;color:var(--dim)}
 .cv-own b{color:var(--gold-hi)}
@@ -638,6 +641,28 @@ body.readonly .card-hit .act{display:none}
 .cv-move .lbl{font-family:var(--mono);font-size:11px;color:var(--faint)}
 .cv-move select{flex:1 1 140px;min-width:0;padding:7px 30px 7px 10px;font-size:12.5px}
 .cv-move button.ghost{padding:8px 12px;font-size:11px}
+
+/* adding a print no card source lists, from the card viewer */
+.cv-custom{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.cv-custom > button.ghost{padding:8px 12px;font-size:11px}
+.custom-form{flex:1 1 100%;display:grid;gap:10px;margin-top:2px;padding:12px;
+  border:1px dashed var(--edge-hi);border-radius:var(--r-sm);background:rgba(3,18,26,.35)}
+.custom-form[hidden]{display:none}
+.custom-h{font-size:12.5px;color:var(--dim)}
+.custom-h b{font-family:var(--mono);color:var(--gold-hi);font-weight:600}
+.custom-form label{display:grid;gap:5px;font:600 10px/1 var(--sans);letter-spacing:.14em;
+  text-transform:uppercase;color:var(--faint)}
+.custom-form input{min-width:0;padding:9px 11px;font:400 13.5px var(--sans);letter-spacing:0;
+  text-transform:none}
+.custom-form input[type=file]{padding:7px 0;background:transparent;border:0;color:var(--dim)}
+.custom-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.custom-btns{display:flex;gap:8px;flex-wrap:wrap}
+.custom-btns > button:not(.ghost){border:0;border-radius:var(--r-sm);padding:0 16px;cursor:pointer;
+  color:#2A1B05;font:800 12px var(--sans);letter-spacing:.04em;min-height:38px;
+  background:linear-gradient(180deg,var(--gold-hi),var(--gold) 58%,#C98A28)}
+.custom-btns > button:disabled{opacity:.6;cursor:default}
+.custom-btns button.ghost{padding:8px 12px;font-size:11px}
+.custom-msg{font-size:12.5px;color:var(--dim);min-height:1em}
 
 .binderMgr h2{margin:0 0 8px;font:600 12px/1 var(--sans);letter-spacing:.16em;
   text-transform:uppercase;color:var(--gold)}

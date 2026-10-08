@@ -175,8 +175,11 @@ public static partial class PriceRefresh
     /// <summary>One source's price for one printing, as stored in card_prices.</summary>
     public sealed record SourcePrice(string CardId, string Source, string Currency, double Amount, string? Url);
 
-    /// <summary>The order a card's shown price is picked in: the first source that has one.</summary>
-    public static readonly string[] Preference = { "cardmarket", "tcgplayer", "optcgapi" };
+    /// <summary>
+    /// The order a card's shown price is picked in: the first source that has one.
+    /// "manual" is a price typed in for a print added by hand; no refresh writes it.
+    /// </summary>
+    public static readonly string[] Preference = { "cardmarket", "tcgplayer", "optcgapi", "manual" };
 
     const string CardmarketBase = "https://www.cardmarket.com/en/OnePiece/Products/Singles/";
 
@@ -376,7 +379,7 @@ public static partial class PriceRefresh
         }
 
         var known = catalog.Select(c => c.CardId).ToHashSet();
-        foreach (var source in Preference)
+        foreach (var source in Preference.Where(s => s != CustomPrintRepository.ManualSource))
         {
             var ids = all.Where(p => p.Source == source).Select(p => p.CardId).ToHashSet();
             Console.WriteLine($"  {source,-10} {ids.Count,6} printings ({ids.Count(known.Contains)} in your catalog)");

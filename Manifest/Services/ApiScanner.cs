@@ -126,7 +126,8 @@ public sealed class ApiScanner
         return new ScanResponse
         {
             Ok = true,
-            CardId = cid,
+            // A print suffix the catalogue lacks fell back to the base card; report that.
+            CardId = card?.CardId ?? cid,
             Card = card,
             InCatalog = card is not null,
             Confidence = reading.Confidence,

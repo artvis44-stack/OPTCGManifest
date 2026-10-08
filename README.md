@@ -207,6 +207,10 @@ Nothing to run. The server does both by itself, once a day:
   and [optcgapi.com](https://optcgapi.com), each kept and shown on the card, converted to
   GBP at the day's rate. A card's headline price is Cardmarket's, else TCGplayer's, else
   optcgapi.com's. A new set's prices are fetched straight after it arrives.
+- **What no source lists.** A print none of these has - a promo that came with a book,
+  say - can be added by hand: open the card and press **Add a print that isn't listed**,
+  with its name, set, rarity, a photo and, if you like, a price. It is filed as `_c1`,
+  `_c2`... under its card, reads as that card everywhere, and survives every refresh.
 
 To do either now, sign in as the owner (the first account made on the server),
 press **Admin** at the top, and use **Check for new sets** or **Refresh prices**
@@ -264,6 +268,7 @@ runs them itself (see *Keeping cards and prices current*):
 dotnet run --project Manifest -- scrape --new      # add new sets from the official site
 dotnet run --project Manifest -- refresh-prices    # market prices, in GBP
 dotnet run --project Manifest -- refresh-catalog   # rebuild from the GitHub dataset
+dotnet run --project Manifest -- print add EB02-003 --name "Book promo" --photo card.jpg
 ```
 
 ### PostgreSQL instead of SQLite

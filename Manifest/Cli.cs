@@ -27,6 +27,7 @@ public static class Cli
                              catalog-extra.json)
           refresh-catalog    rebuild catalog.json from the vegapull-records dataset
           refresh-prices     pull market prices into the database
+          print add          add a print no card source lists, with its photo
           migrate-sqlite     copy a manifest.db into PostgreSQL, once
           worker             run background jobs (with MANIFEST_WORKER_MODE=external)
           enqueue            queue scrape-catalog, refresh-prices, refresh-catalog

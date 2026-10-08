@@ -19,7 +19,8 @@ public static class Endpoints
         "/api/access/invite", "/api/access/requests",
         "/api/access/requests/<id>/approve", "/api/access/requests/<id>/deny",
         "/api/search", "/api/facets", "/api/card/<card-id>", "/api/prints/<card-id>",
-        "/api/collection", "/api/collection/bulk", "/api/collection/print", "/api/collection/stats", "/api/stats",
+        "/api/collection", "/api/collection/bulk", "/api/collection/print",
+        "/api/prints/custom", "/api/prints/custom/delete", "/api/collection/stats", "/api/stats",
         "/api/export.csv",
         "/api/decks", "/api/decks/<id>", "/api/decks/<id>/card",
         "/api/decks/<id>/cards", "/api/decks/<id>/print", "/api/decks/<id>/delete", "/api/scan", "/api/scan/<id>",
@@ -303,6 +304,8 @@ public static class Endpoints
         var users = app.Services.GetRequiredService<UserRepository>();
         var access = app.Services.GetRequiredService<AccessRepository>();
         var binders = app.Services.GetRequiredService<BinderRepository>();
+        var customPrints = app.Services.GetRequiredService<CustomPrintRepository>();
+        var images = app.Services.GetRequiredService<IImageStore>();
 
         MapAuth(app, users, access, config);
 
@@ -336,6 +339,55 @@ public static class Endpoints
             catch (ArgumentException e)
             {
                 await ctx.Json(400, new { error = e.Message });
+            }
+        });
+
+        // A print no card source lists, added by hand; the photo goes straight into the
+        // image store under the new print's id.
+        app.MapPost("/api/prints/custom", async ctx =>
+        {
+            var body = await Body<CustomPrintPost>(ctx);
+            byte[]? photo = null;
+            if (!string.IsNullOrEmpty(body.Image))
+            {
+                try { photo = Convert.FromBase64String(body.Image); }
+                catch (FormatException) { }
+                if (photo is null || ImageCache.ContentTypeOf(photo) is null)
+                {
+                    await ctx.Json(400, new { error = "The photo has to be a JPEG, PNG or WebP picture." });
+                    return;
+                }
+            }
+            try
+            {
+                var id = customPrints.Create(ctx.UserId(), new CustomPrintInput(
+                    body.CardId ?? "", body.Variant ?? "", body.SetLabel, body.Rarity, body.PriceGbp));
+                if (photo is not null) await images.Put(ImageCache.KeyFor(id), photo);
+                var scope = BinderEndpoints.ReadScope(ctx, binders) ?? BinderScope.Usable(ctx.UserId());
+                await ctx.Json(200, new { card = cards.CardDetail(scope, id) });
+            }
+            catch (CustomPrintError e)
+            {
+                await ctx.Json(e.Status, new { error = e.Message });
+            }
+        });
+
+        app.MapPost("/api/prints/custom/delete", async ctx =>
+        {
+            var body = await Body<CustomPrintPost>(ctx);
+            if (string.IsNullOrEmpty(body.CardId) || ctx.User() is not { } user)
+            {
+                await ctx.Json(400, new { error = "card_id required" });
+                return;
+            }
+            try
+            {
+                customPrints.Delete(user, body.CardId);
+                await ctx.Json(200, new { ok = true });
+            }
+            catch (CustomPrintError e)
+            {
+                await ctx.Json(e.Status, new { error = e.Message });
             }
         });
 

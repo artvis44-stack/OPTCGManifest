@@ -17,7 +17,7 @@ if (args.Length > 0 && args[0] == "worker")
 
 if (args.Length > 0
     && args[0] is "scrape" or "refresh-catalog" or "refresh-prices" or "user" or "migrate-sqlite"
-                  or "enqueue")
+                  or "enqueue" or "print")
 {
     var toolPaths = new AppPaths(Cli.RootFrom(args));
     return args[0] switch
@@ -28,6 +28,7 @@ if (args.Length > 0
         "user" => UserAdmin.Run(args[1..], new Database(toolPaths)),
         "migrate-sqlite" => SqliteToPostgres.Run(args[1..], toolPaths),
         "enqueue" => WorkerHost.Enqueue(args[1..], toolPaths),
+        "print" => await PrintAdmin.Run(args[1..], toolPaths),
         _ => 1,
     };
 }

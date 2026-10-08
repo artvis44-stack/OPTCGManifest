@@ -41,6 +41,8 @@ public static class SqliteToPostgres
                     + "block_icon, image_url", null),
         ("prices", "card_id, usd, gbp, fetched_at", null),
         ("card_prices", "card_id, source, currency, amount, gbp, url, fetched_at", null),
+        ("custom_prints", "card_id, base_id, name, variant, set_label, rarity, created_by, "
+                          + "created_at, deleted_at", null),
         ("users", "id, username, password_hash, email, created_at, last_seen", null),
         ("binders", "id, name, kind, owner_id, visible, created_at", null),
         ("binder_members", "binder_id, user_id, added_at",
@@ -73,6 +75,7 @@ public static class SqliteToPostgres
     {
         "created_at", "last_seen", "decided_at", "action_expires_at", "invite_expires_at",
         "invite_sent_at", "used_at", "expires_at", "added_at", "updated_at", "at", "fetched_at",
+        "deleted_at",
     };
 
     public static int Run(string[] args, AppPaths paths)
