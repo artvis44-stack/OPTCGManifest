@@ -327,6 +327,32 @@ public sealed class Database
             PRIMARY KEY (deck_id, card_id)
         );
 
+        -- Cards put up for sale on eBay, and what became of them.
+        -- See Migrations/Postgres/0007_listings.sql.
+        CREATE TABLE IF NOT EXISTS listings (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            card_id        TEXT NOT NULL,
+            title          TEXT NOT NULL,
+            description    TEXT NOT NULL DEFAULT '',
+            condition      TEXT NOT NULL DEFAULT 'Near Mint',
+            qty            INTEGER NOT NULL DEFAULT 1 CHECK (qty > 0),
+            status         TEXT NOT NULL DEFAULT 'draft'
+                           CHECK (status IN ('draft', 'listed', 'sold', 'ended')),
+            price_gbp      REAL,
+            cost_gbp       REAL,
+            sold_price_gbp REAL,
+            fees_gbp       REAL,
+            postage_gbp    REAL,
+            ebay_url       TEXT,
+            note           TEXT NOT NULL DEFAULT '',
+            created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            listed_at      TEXT,
+            sold_at        TEXT,
+            updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_listings_user ON listings(user_id, status);
+
         -- Work that happens outside a request: fetching card art, sending mail,
         -- reading a scan. See JobQueue for the life cycle of a row.
         CREATE TABLE IF NOT EXISTS jobs (

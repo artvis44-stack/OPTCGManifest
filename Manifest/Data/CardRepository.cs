@@ -482,7 +482,7 @@ public sealed class CardRepository : ICardRepository, IScanRepository
         return card;
     }
 
-    static List<SourcePriceRow> SourcePrices(System.Data.Common.DbConnection conn, string cardId)
+    internal static List<SourcePriceRow> SourcePrices(System.Data.Common.DbConnection conn, string cardId)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT source, currency, amount, gbp, url FROM card_prices WHERE card_id = @id";

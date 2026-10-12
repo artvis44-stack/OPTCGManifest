@@ -169,6 +169,23 @@ a binder with look at your own Mine, read-only, with the switch in Manage binder
 The API takes the same choice as `?binder=<id>` or `?binder=all` on the collection,
 search, card, stats and export routes; without it, they mean your own binder.
 
+## Selling on eBay
+
+Open any card and tap **Sell on eBay**, or type a number into the **Selling** tab.
+The app writes the listing for you to paste into eBay: an 80-character title with
+the terms buyers search for (name, number, rarity, alt art, language, condition or
+grade), a description, and the item specifics eBay's trading card category asks for,
+each with its own Copy button. It fills in the market price and links to eBay's
+sold listings for the card so you can check what it really goes for. Your postage
+blurb goes in "Your shop footer" once and is added to every new description.
+
+Nothing is posted to eBay. The app keeps track of each listing instead: draft,
+listed, sold or ended unsold. Mark one sold with what it went for, the fees and
+postage, and it can take the copies out of your binder too. The Selling tab
+shows what is up now, revenue and profit (sale less fees, postage and what you
+paid), how long cards take to sell, sell-through, and which cards sell best,
+over the last 30 or 90 days, the last year or all time.
+
 ## Getting your data out
 
 `Export CSV` in the My cards tab exports the binder you are looking at, or

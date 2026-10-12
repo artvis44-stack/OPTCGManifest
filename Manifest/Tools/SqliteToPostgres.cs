@@ -55,6 +55,10 @@ public static class SqliteToPostgres
          "user_id IN (SELECT id FROM users)"),
         ("decks", "id, user_id, name, leader_card_id, created_at, updated_at", null),
         ("deck_cards", "deck_id, card_id, qty", "deck_id IN (SELECT id FROM decks)"),
+        ("listings", "id, user_id, card_id, title, description, condition, qty, status, price_gbp, "
+                     + "cost_gbp, sold_price_gbp, fees_gbp, postage_gbp, ebay_url, note, created_at, "
+                     + "listed_at, sold_at, updated_at",
+         "user_id IN (SELECT id FROM users)"),
         ("collection", "binder_id, card_id, qty, note, added_at, updated_at, added_by", null),
         ("scan_log", "id, user_id, card_id, result, at", null),
     };
@@ -75,7 +79,7 @@ public static class SqliteToPostgres
     {
         "created_at", "last_seen", "decided_at", "action_expires_at", "invite_expires_at",
         "invite_sent_at", "used_at", "expires_at", "added_at", "updated_at", "at", "fetched_at",
-        "deleted_at",
+        "deleted_at", "listed_at", "sold_at",
     };
 
     public static int Run(string[] args, AppPaths paths)
@@ -244,7 +248,7 @@ public static class SqliteToPostgres
     static void RefuseIfInUse(DbConnection dst)
     {
         var busy = new[] { "users", "access_requests", "sessions", "binders", "decks", "collection",
-                           "scan_log" }
+                           "scan_log", "listings" }
             .Where(t => Count(dst, $"SELECT COUNT(*) FROM (SELECT 1 FROM {t} LIMIT 1) x") > 0)
             .ToList();
         if (busy.Count > 0)
@@ -342,7 +346,7 @@ public static class SqliteToPostgres
     /// </summary>
     static void ResetIdentities(DbConnection dst)
     {
-        foreach (var table in new[] { "users", "binders", "access_requests", "decks", "scan_log" })
+        foreach (var table in new[] { "users", "binders", "access_requests", "decks", "scan_log", "listings" })
             dst.Exec($"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
                      + $"COALESCE(MAX(id), 0) + 1, false) FROM {table}");
     }

@@ -27,6 +27,7 @@ public static class Endpoints
         "/api/binders", "/api/binders/<id>", "/api/binders/<id>/members",
         "/api/binders/<id>/members/<username>/delete", "/api/binders/<id>/delete",
         "/api/binders/visibility", "/api/binders/move",
+        "/api/listings", "/api/listings/draft", "/api/listings/<id>", "/api/listings/<id>/delete",
         "/api/admin/data", "/api/admin/data/<scrape-catalog|refresh-prices>",
     };
 
@@ -36,6 +37,7 @@ public static class Endpoints
         MapPost(app);
         AccessEndpoints.Map(app);
         BinderEndpoints.Map(app);
+        ListingEndpoints.Map(app);
         AdminEndpoints.Map(app);
 
         app.MapFallback(async ctx =>

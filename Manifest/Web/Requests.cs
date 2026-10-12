@@ -142,3 +142,23 @@ public sealed class MovePost
     public long To { get; set; }
     [JsonConverter(typeof(LenientIntConverter))] public int? Qty { get; set; }
 }
+
+public sealed class ListingPost
+{
+    public string? CardId { get; set; }
+    public string? Title { get; set; }
+    public string? Description { get; set; }
+    public string? Condition { get; set; }
+    [JsonConverter(typeof(LenientIntConverter))] public int? Qty { get; set; }
+    public string? Status { get; set; }
+    public double? PriceGbp { get; set; }
+    public double? CostGbp { get; set; }
+    public double? SoldPriceGbp { get; set; }
+    public double? FeesGbp { get; set; }
+    public double? PostageGbp { get; set; }
+    public string? EbayUrl { get; set; }
+    public string? Note { get; set; }
+
+    public Data.ListingInput ToInput() => new(CardId, Title, Description, Condition, Qty, Status, PriceGbp,
+                                              CostGbp, SoldPriceGbp, FeesGbp, PostageGbp, EbayUrl, Note);
+}
