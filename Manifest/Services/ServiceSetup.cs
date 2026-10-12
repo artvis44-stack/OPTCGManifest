@@ -41,6 +41,7 @@ public static class ServiceSetup
         services.AddSingleton<IScanRepository>(sp => sp.GetRequiredService<CardRepository>());
         services.AddSingleton<BinderRepository>();
         services.AddSingleton<CustomPrintRepository>();
+        services.AddSingleton<ListingRepository>();
         services.AddSingleton<DeckRepository>();
         services.AddSingleton<IDeckRepository>(sp => sp.GetRequiredService<DeckRepository>());
 

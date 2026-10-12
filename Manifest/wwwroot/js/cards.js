@@ -64,7 +64,8 @@ function readFilters(suffix) {
 }
 
 /* ---------- tabs ---------- */
-const panes = {tabLog:'paneLog', tabOwn:'paneOwn', tabDeck:'paneDeck', tabScan:'paneScan'};
+const panes = {tabLog:'paneLog', tabOwn:'paneOwn', tabDeck:'paneDeck', tabScan:'paneScan',
+               tabSell:'paneSell'};
 Object.keys(panes).forEach(t => $('#'+t).onclick = () => {
   Object.entries(panes).forEach(([k,v]) => {
     $('#'+k).setAttribute('aria-selected', k===t);
@@ -74,6 +75,7 @@ Object.keys(panes).forEach(t => $('#'+t).onclick = () => {
   clearInspector();
   if (t==='tabOwn') loadOwned();
   if (t==='tabDeck') showDeckList();
+  if (t==='tabSell') loadSelling().catch(() => {});
   if (t==='tabLog') $('#q').focus();
   if (t!=='tabScan') stopCam();
 });
@@ -329,7 +331,8 @@ const collectionActs = c => `<div class="cv-act">
     <span class="n" data-qty>${c.qty || 0}</span>
     <button class="stepper" data-step="1" aria-label="One more">+</button>
     <span class="lbl">owned</span>
-  </div>${moveActs(c)}<div data-print-acts></div>${customActs(c)}`;
+  </div>${moveActs(c)}<div data-print-acts></div>
+  <div class="cv-sell"><button type="button" class="ghost" data-sell>Sell on eBay</button></div>${customActs(c)}`;
 
 function cardViewHTML(c, o) {
   o = o || {};
@@ -465,6 +468,8 @@ function wireCollectionActs(host, c) {
   wireMoveActs(host, c);
   wirePrintActs(host, c);
   wireCustomActs(host, c);
+  const sell = host.querySelector('[data-sell]');
+  if (sell) sell.onclick = () => openListingComposer(c);
 }
 
 /* ---------- prints added by hand ----------

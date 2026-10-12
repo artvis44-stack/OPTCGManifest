@@ -12,6 +12,7 @@
 <script src="/js/binders.js" defer></script>
 <script src="/js/decks.js" defer></script>
 <script src="/js/scan.js" defer></script>
+<script src="/js/selling.js" defer></script>
 <script src="/js/session.js" defer></script>
 </head>
 <body data-tab="tabLog">
@@ -38,6 +39,7 @@
       <button id="tabOwn"  role="tab" aria-selected="false">My cards</button>
       <button id="tabDeck" role="tab" aria-selected="false">Decks</button>
       <button id="tabScan" role="tab" aria-selected="false">Scan</button>
+      <button id="tabSell" role="tab" aria-selected="false">Selling</button>
     </nav>
 
     <div class="tot">
@@ -306,6 +308,50 @@
   </div>
   <div class="status" id="status"></div>
   <div id="hit"></div>
+</section>
+
+<!-- SELLING: eBay listings drafted here, tracked to the sale -->
+<section id="paneSell" hidden>
+  <div class="panel">
+    <div class="panelHead">
+      <h2>Selling</h2>
+      <span class="sm">eBay listings, written here, tracked to the sale</span>
+      <select id="sellDays" aria-label="Sales over" class="sellDays">
+        <option value="30">Last 30 days</option>
+        <option value="90">Last 90 days</option>
+        <option value="365">Last year</option>
+        <option value="" selected>All time</option>
+      </select>
+    </div>
+    <div class="searchrow">
+      <input id="sellQ" placeholder="Card to sell: OP01-120 or Shanks" autocomplete="off"
+             autocapitalize="characters" spellcheck="false">
+      <button id="sellGo">List it</button>
+    </div>
+    <div class="status" id="sellMsg"></div>
+    <p class="tip">Writes the title, description and item specifics to paste into eBay.
+       Or open any card and tap <b>Sell on eBay</b>.</p>
+  </div>
+
+  <div class="sell-stats" id="sellStats"></div>
+
+  <div class="sell-cols">
+    <div class="deckSection sell-main">
+      <h3>Listings</h3>
+      <div class="sell-filter" id="sellFilter" role="group" aria-label="Show">
+        <button type="button" data-f="all" class="on">All <i></i></button>
+        <button type="button" data-f="draft">Drafts <i></i></button>
+        <button type="button" data-f="listed">Listed <i></i></button>
+        <button type="button" data-f="sold">Sold <i></i></button>
+        <button type="button" data-f="ended">Ended <i></i></button>
+      </div>
+      <div id="sellList"></div>
+    </div>
+    <div class="deckSection sell-side">
+      <h3>What's selling <span class="sm">most cards sold</span></h3>
+      <div id="sellTop"></div>
+    </div>
+  </div>
 </section>
 
 </main>
