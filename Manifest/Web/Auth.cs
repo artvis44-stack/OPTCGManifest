@@ -23,7 +23,7 @@ public sealed class Auth
     {
         "/api/health", "/api/health/live", "/api/health/ready",
         "/api/session", "/api/auth/login", "/api/auth/register", "/api/auth/logout",
-        "/setup", "/ca.crt", "/ca.pem", "/favicon.ico",
+        "/setup", "/ca.crt", "/ca.pem", "/favicon.ico", "/favicon.svg",
 
         // The request-access flow, which exists precisely for people who have no
         // account and therefore cannot get past this middleware. Each of these

@@ -97,6 +97,7 @@ a{color:var(--gold)}
     /// </summary>
     public const string Review = Style + """
 <title>Manifest — review a request</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <div class=wrap>
 """ + Brand + """
   <div class=panel id=panel>
@@ -206,6 +207,7 @@ load();
     /// </summary>
     public const string Admin = Style + """
 <title>Manifest — admin</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <div class=wrap>
 """ + Brand + """
   <div class=panel>
@@ -469,6 +471,7 @@ loadData().catch(() => {});
 
     public const string NotYours = Style + """
 <title>Manifest — not yours</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <div class=wrap>
 """ + Brand + """
   <div class=panel>

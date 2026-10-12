@@ -12,6 +12,7 @@ public static class LoginPage
 <!doctype html><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Manifest — sign in</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
 :root{
   --abyss:#03121A; --deep:#07202C; --panel:rgba(21,69,90,.42);

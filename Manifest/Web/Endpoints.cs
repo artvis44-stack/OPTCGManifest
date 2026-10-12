@@ -97,6 +97,9 @@ public static class Endpoints
         app.MapGet("/index.html", Ui);
         app.MapGet("/css/{**path}", (HttpContext ctx, string path) => assets.Serve(ctx, "css/" + path));
         app.MapGet("/js/{**path}", (HttpContext ctx, string path) => assets.Serve(ctx, "js/" + path));
+        // Browsers ask for /favicon.ico whatever the page says; both get the SVG.
+        app.MapGet("/favicon.svg", ctx => assets.Serve(ctx, "favicon.svg"));
+        app.MapGet("/favicon.ico", ctx => assets.Serve(ctx, "favicon.svg"));
 
         app.MapGet("/img/{**cardId}", async (HttpContext ctx, string cardId) =>
         {
